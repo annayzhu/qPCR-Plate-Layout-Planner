@@ -11,7 +11,29 @@ export interface ManualAssignment {
   geneType: GeneType | null;
 }
 
-export type BoxSelectionMode = "replace" | "toggle";
+export interface CopiedWell {
+  rowOffset: number;
+  columnOffset: number;
+  sample: string | null;
+  gene: string | null;
+  geneType: GeneType | null;
+  replicateIndex: number | null;
+}
+
+export interface WellClipboard {
+  wells: CopiedWell[];
+}
+
+export type PasteCopiedWellsResult =
+  | {
+      ok: true;
+      plate: PlannerPlate;
+      pastedWellIds: string[];
+      overwrittenWellIds: string[];
+    }
+  | { ok: false; reason: "empty-clipboard" | "invalid-anchor" | "out-of-bounds" };
+
+export type BoxSelectionMode = "replace" | "add";
 
 export type TranslateSelectionResult =
   | {
@@ -67,13 +89,7 @@ export function applyBoxSelection(
   mode: BoxSelectionMode,
 ) {
   if (mode === "replace") return Array.from(new Set(boxedWellIds));
-
-  const next = new Set(currentWellIds);
-  for (const wellId of new Set(boxedWellIds)) {
-    if (next.has(wellId)) next.delete(wellId);
-    else next.add(wellId);
-  }
-  return Array.from(next);
+  return Array.from(new Set([...currentWellIds, ...boxedWellIds]));
 }
 
 export function assignSelectedWells(
@@ -97,6 +113,124 @@ export function assignSelectedWells(
         replicateIndex: well.replicateIndex,
         source: "manual" as const,
       };
+    }),
+  };
+}
+
+export function copySelectedWells(
+  plate: PlannerPlate,
+  selectedWellIds: readonly string[],
+): WellClipboard {
+  const selected = new Set(selectedWellIds);
+  const wells = plate.wells.filter((well) => selected.has(well.wellId));
+  if (wells.length === 0) return { wells: [] };
+  const minRow = Math.min(...wells.map((well) => well.row));
+  const minColumn = Math.min(...wells.map((well) => well.column));
+  return {
+    wells: wells
+      .slice()
+      .sort((left, right) => left.row - right.row || left.column - right.column)
+      .map((well) => ({
+        rowOffset: well.row - minRow,
+        columnOffset: well.column - minColumn,
+        sample: well.sample,
+        gene: well.gene,
+        geneType: well.geneType,
+        replicateIndex: well.replicateIndex,
+      })),
+  };
+}
+
+export function clipboardMatchesExperiment(
+  clipboard: WellClipboard,
+  sampleNames: readonly string[],
+  geneNames: readonly string[],
+) {
+  const samples = new Set(sampleNames);
+  const genes = new Set(geneNames);
+  return clipboard.wells.every(
+    (well) =>
+      (!well.sample || samples.has(well.sample)) &&
+      (!well.gene || genes.has(well.gene)),
+  );
+}
+
+export function pasteCopiedWells(
+  plate: PlannerPlate,
+  clipboard: WellClipboard,
+  destinationAnchorWellId: string,
+): PasteCopiedWellsResult {
+  if (clipboard.wells.length === 0) {
+    return { ok: false, reason: "empty-clipboard" };
+  }
+  const anchor = plate.wells.find(
+    (well) => well.wellId === destinationAnchorWellId,
+  );
+  if (!anchor) return { ok: false, reason: "invalid-anchor" };
+
+  const destinations = clipboard.wells.map((copied) => ({
+    copied,
+    row: anchor.row + copied.rowOffset,
+    column: anchor.column + copied.columnOffset,
+  }));
+  if (
+    destinations.some(
+      ({ row, column }) =>
+        row < 0 || row >= plate.rows || column < 0 || column >= plate.columns,
+    )
+  ) {
+    return { ok: false, reason: "out-of-bounds" };
+  }
+
+  const destinationById = new Map(
+    destinations.map((destination) => [
+      formatWellId(destination.row, destination.column),
+      destination,
+    ]),
+  );
+  const overwrittenWellIds = plate.wells
+    .filter(
+      (well) =>
+        destinationById.has(well.wellId) && Boolean(well.sample && well.gene),
+    )
+    .map((well) => well.wellId);
+  const wells = plate.wells.map((well) => {
+    const destination = destinationById.get(well.wellId);
+    if (!destination) return well;
+    return {
+      ...well,
+      sample: destination.copied.sample,
+      gene: destination.copied.gene,
+      geneType: destination.copied.geneType,
+      replicateIndex: destination.copied.replicateIndex,
+      source: "manual" as const,
+    };
+  });
+  return {
+    ok: true,
+    plate: { ...plate, wells },
+    pastedWellIds: destinations.map(({ row, column }) =>
+      formatWellId(row, column),
+    ),
+    overwrittenWellIds,
+  };
+}
+
+export function restoreSelectedWells(
+  currentPlate: PlannerPlate,
+  automaticPlate: PlannerPlate,
+  selectedWellIds: readonly string[],
+): PlannerPlate {
+  const selected = new Set(selectedWellIds);
+  const automaticByWellId = new Map(
+    automaticPlate.wells.map((well) => [well.wellId, well]),
+  );
+  return {
+    ...currentPlate,
+    wells: currentPlate.wells.map((well) => {
+      if (!selected.has(well.wellId)) return well;
+      const automaticWell = automaticByWellId.get(well.wellId);
+      return automaticWell ? { ...automaticWell } : well;
     }),
   };
 }

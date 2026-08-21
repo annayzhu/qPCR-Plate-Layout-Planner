@@ -6,6 +6,8 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ClipboardPaste,
+  Copy,
   Download,
   FlaskConical,
   GripVertical,
@@ -24,6 +26,8 @@ import {
   Trash2,
   Undo2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -70,9 +74,14 @@ import {
 import {
   applyBoxSelection,
   assignSelectedWells,
+  clipboardMatchesExperiment,
+  copySelectedWells,
+  pasteCopiedWells,
   rectangularWellIds,
+  restoreSelectedWells,
   translateSelectedWells,
   type BoxSelectionMode,
+  type WellClipboard,
 } from "@/lib/manualLayout";
 import {
   defaultPlateName,
@@ -587,6 +596,8 @@ export function QpcrPlanner() {
   const boxSelectionRef = useRef<BoxSelectionState | null>(null);
   const suppressWellClickRef = useRef(false);
   const [moveMode, setMoveMode] = useState(false);
+  const [wellClipboard, setWellClipboard] = useState<WellClipboard | null>(null);
+  const [plateZoom, setPlateZoom] = useState(1);
   const [editingPlateName, setEditingPlateName] = useState(false);
   const [plateNameDraft, setPlateNameDraft] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -1551,7 +1562,7 @@ export function QpcrPlanner() {
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") {
+      if (!(event.metaKey || event.ctrlKey)) {
         return;
       }
       const activeElement = document.activeElement;
@@ -1562,11 +1573,32 @@ export function QpcrPlanner() {
       ) {
         return;
       }
-      event.preventDefault();
-      if (event.shiftKey) {
-        if (!redoEntries() && redoStack.length > 0) redoLayout();
-      } else if (!undoEntries() && undoStack.length > 0) {
-        undoLayout();
+      const key = event.key.toLowerCase();
+      if (key === "c" && selectedWellIds.length > 0) {
+        event.preventDefault();
+        copySelection();
+        return;
+      }
+      if (
+        key === "v" &&
+        wellClipboard &&
+        clipboardMatchesExperiment(
+          wellClipboard,
+          sampleNames,
+          completeGenes.map((gene) => gene.name),
+        )
+      ) {
+        event.preventDefault();
+        pasteSelection();
+        return;
+      }
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          if (!redoEntries() && redoStack.length > 0) redoLayout();
+        } else if (!undoEntries() && undoStack.length > 0) {
+          undoLayout();
+        }
       }
     };
     window.addEventListener("keydown", handleKeyboard);
@@ -1748,9 +1780,17 @@ export function QpcrPlanner() {
 
   function boxPointerPosition(event: ReactPointerEvent<HTMLDivElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
+    const unscaledWidth = bounds.width / plateZoom;
+    const unscaledHeight = bounds.height / plateZoom;
     return {
-      x: Math.max(0, Math.min(bounds.width, event.clientX - bounds.left)),
-      y: Math.max(0, Math.min(bounds.height, event.clientY - bounds.top)),
+      x: Math.max(
+        0,
+        Math.min(unscaledWidth, (event.clientX - bounds.left) / plateZoom),
+      ),
+      y: Math.max(
+        0,
+        Math.min(unscaledHeight, (event.clientY - bounds.top) / plateZoom),
+      ),
     };
   }
 
@@ -1786,7 +1826,7 @@ export function QpcrPlanner() {
       anchorWellId,
       endWellId: anchorWellId,
       baseWellIds: [...selectedWellIds],
-      mode: event.metaKey || event.ctrlKey ? "toggle" : "replace",
+      mode: event.metaKey || event.ctrlKey ? "add" : "replace",
       startX: position.x,
       startY: position.y,
       currentX: position.x,
@@ -1911,6 +1951,106 @@ export function QpcrPlanner() {
       message: tr(
         `已清空 ${selectedWellIds.length} 个所选孔。`,
         `Cleared ${selectedWellIds.length} selected well(s).`,
+      ),
+    });
+  }
+
+  function copySelection() {
+    if (!activePlate || selectedWellIds.length === 0) return false;
+    const copied = copySelectedWells(activePlate, selectedWellIds);
+    if (copied.wells.length === 0) return false;
+    setWellClipboard(copied);
+    setToast({
+      tone: "neutral",
+      message: tr(
+        `已复制 ${copied.wells.length} 个孔；选择目标起始孔后粘贴。`,
+        `Copied ${copied.wells.length} well(s); select a destination anchor to paste.`,
+      ),
+    });
+    return true;
+  }
+
+  function pasteSelection() {
+    if (
+      !layout ||
+      !activePlate ||
+      !wellClipboard ||
+      !clipboardMatchesExperiment(
+        wellClipboard,
+        sampleNames,
+        completeGenes.map((gene) => gene.name),
+      ) ||
+      activePlateConfirmed ||
+      settingsStale
+    ) {
+      return false;
+    }
+    const destinationWellId = selectionAnchorId ?? selectedWellIds[0];
+    if (!destinationWellId) {
+      setToast({
+        tone: "error",
+        message: tr(
+          "请先选择粘贴区域的起始孔。",
+          "Select the destination anchor well first.",
+        ),
+      });
+      return false;
+    }
+    const pasted = pasteCopiedWells(
+      activePlate,
+      wellClipboard,
+      destinationWellId,
+    );
+    if (!pasted.ok) {
+      setToast({
+        tone: "error",
+        message: tr(
+          "复制区域粘贴后会超出孔板边界。",
+          "The copied block would exceed the plate boundary.",
+        ),
+      });
+      return false;
+    }
+    const next = clonePlan(layout);
+    next.plates[activePlateIndex] = pasted.plate;
+    commitLayout(next, activePlate.plateNumber);
+    setSelectedWellIds(pasted.pastedWellIds);
+    setSelectionAnchorId(pasted.pastedWellIds[0] ?? null);
+    setToast({
+      tone: "neutral",
+      message: tr(
+        `已粘贴 ${pasted.pastedWellIds.length} 个孔；用量已按当前布局重算。`,
+        `Pasted ${pasted.pastedWellIds.length} well(s); requirements were recalculated.`,
+      ),
+    });
+    return true;
+  }
+
+  function restoreSelectedFromAutomatic() {
+    if (
+      !layout ||
+      !automaticLayout ||
+      !activePlate ||
+      selectedWellIds.length === 0
+    ) {
+      return;
+    }
+    const source = automaticLayout.plates.find(
+      (plate) => plate.plateNumber === activePlate.plateNumber,
+    );
+    if (!source) return;
+    const next = clonePlan(layout);
+    next.plates[activePlateIndex] = restoreSelectedWells(
+      activePlate,
+      source,
+      selectedWellIds,
+    );
+    commitLayout(next, activePlate.plateNumber);
+    setToast({
+      tone: "success",
+      message: tr(
+        `已恢复 ${selectedWellIds.length} 个所选孔的生成值。`,
+        `Restored generated values for ${selectedWellIds.length} selected well(s).`,
       ),
     });
   }
@@ -3822,6 +3962,42 @@ export function QpcrPlanner() {
                       <button
                         className="button button-quiet"
                         type="button"
+                        onClick={copySelection}
+                        disabled={selectedWellIds.length === 0}
+                        title={tr(
+                          "复制所选孔（⌘/Ctrl + C）",
+                          "Copy selected wells (⌘/Ctrl + C)",
+                        )}
+                      >
+                        <Copy size={13} />
+                        {tr("复制", "Copy")}
+                      </button>
+                      <button
+                        className="button button-quiet"
+                        type="button"
+                        onClick={pasteSelection}
+                        disabled={
+                          !wellClipboard ||
+                          !clipboardMatchesExperiment(
+                            wellClipboard,
+                            sampleNames,
+                            completeGenes.map((gene) => gene.name),
+                          ) ||
+                          selectedWellIds.length === 0 ||
+                          activePlateConfirmed ||
+                          settingsStale
+                        }
+                        title={tr(
+                          "粘贴到所选起始孔（⌘/Ctrl + V）",
+                          "Paste at selected anchor (⌘/Ctrl + V)",
+                        )}
+                      >
+                        <ClipboardPaste size={13} />
+                        {tr("粘贴", "Paste")}
+                      </button>
+                      <button
+                        className="button button-quiet"
+                        type="button"
                         onClick={undoLayout}
                         disabled={undoStack.length === 0}
                         title={tr(
@@ -3863,6 +4039,25 @@ export function QpcrPlanner() {
                       >
                         <Pencil size={13} />
                         {tr("编辑", "Edit")}
+                      </button>
+                      <button
+                        className="button button-quiet"
+                        type="button"
+                        disabled={
+                          selectedWellIds.length === 0 ||
+                          activePlateConfirmed ||
+                          settingsStale ||
+                          !selectedWellIds.some(
+                            (wellId) =>
+                              activePlate.wells.find(
+                                (well) => well.wellId === wellId,
+                              )?.source === "manual",
+                          )
+                        }
+                        onClick={restoreSelectedFromAutomatic}
+                      >
+                        <RotateCcw size={13} />
+                        {tr("恢复所选", "Restore selected")}
                       </button>
                       <button
                         className={`button button-quiet ${
@@ -3908,6 +4103,52 @@ export function QpcrPlanner() {
                           <X size={14} />
                         </button>
                       )}
+                      <span
+                        className="zoom-controls"
+                        role="group"
+                        aria-label={tr("孔板视图缩放", "Plate view zoom")}
+                      >
+                        <button
+                          className="icon-button"
+                          type="button"
+                          disabled={plateZoom <= 0.5}
+                          onClick={() =>
+                            setPlateZoom((value) =>
+                              Math.max(
+                                0.5,
+                                Number((value - 0.1).toFixed(1)),
+                              ),
+                            )
+                          }
+                          aria-label={tr("缩小孔板", "Zoom out")}
+                        >
+                          <ZoomOut size={14} />
+                        </button>
+                        <button
+                          className="zoom-value"
+                          type="button"
+                          onClick={() => setPlateZoom(1)}
+                          title={tr("恢复 100%", "Reset to 100%")}
+                        >
+                          {Math.round(plateZoom * 100)}%
+                        </button>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          disabled={plateZoom >= 1.3}
+                          onClick={() =>
+                            setPlateZoom((value) =>
+                              Math.min(
+                                1.3,
+                                Number((value + 0.1).toFixed(1)),
+                              ),
+                            )
+                          }
+                          aria-label={tr("放大孔板", "Zoom in")}
+                        >
+                          <ZoomIn size={14} />
+                        </button>
+                      </span>
                     </div>
                   </div>
 
@@ -3921,6 +4162,7 @@ export function QpcrPlanner() {
                       style={
                         {
                           "--plate-columns": activePlate.columns,
+                          zoom: plateZoom,
                         } as CSSProperties
                       }
                       role="grid"

@@ -2071,6 +2071,9 @@ select:focus-visible,
 }
 
 .selection-toolbar {
+  position: sticky;
+  z-index: 12;
+  top: 0;
   display: flex;
   min-height: 48px;
   align-items: center;
@@ -2081,6 +2084,7 @@ select:focus-visible,
   background: #f8f8f5;
   color: var(--ink-secondary);
   font-size: 10px;
+  box-shadow: 0 6px 18px rgba(32, 31, 38, 0.045);
 }
 
 .selection-actions {
@@ -2108,6 +2112,38 @@ select:focus-visible,
   border-color: #b7aef1;
   background: #eeeafd;
   color: #5545b8;
+}
+
+.zoom-controls {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  padding-left: 5px;
+  border-left: 1px solid var(--border);
+}
+
+.zoom-controls .icon-button {
+  min-height: 30px;
+  width: 30px;
+}
+
+.zoom-value {
+  min-width: 46px;
+  min-height: 30px;
+  padding: 0 5px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-secondary);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.zoom-value:hover {
+  background: var(--surface-muted);
+  color: var(--ink);
 }
 
 .plate-scroll {
@@ -2547,9 +2583,7 @@ select:focus-visible,
   }
 
   .plate-card-heading {
-    position: sticky;
-    z-index: 8;
-    top: 0;
+    position: static;
     background: color-mix(in srgb, var(--surface) 96%, var(--canvas));
   }
 
