@@ -1898,6 +1898,46 @@ select:focus-visible,
   gap: 8px;
 }
 
+.plate-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 10px;
+}
+
+.plate-sample-details {
+  position: relative;
+}
+
+.plate-sample-details > summary {
+  color: var(--accent);
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+
+.plate-sample-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.plate-sample-details > summary::after {
+  margin-left: 3px;
+  content: "▾";
+  font-size: 8px;
+}
+
+.plate-sample-details[open] > summary::after {
+  content: "▴";
+}
+
+.plate-sample-details > span {
+  display: block;
+  max-width: 720px;
+  margin-top: 5px;
+  color: var(--ink-tertiary);
+  line-height: 1.55;
+}
+
 .plate-name-button {
   display: inline-flex;
   min-width: 0;

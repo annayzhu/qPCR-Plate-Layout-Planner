@@ -3801,26 +3801,40 @@ export function QpcrPlanner() {
                           {currentStatus.label}
                         </span>
                       </div>
-                      <p className="plate-subtitle">
-                        {tr(
-                          `板号 ${String(activePlate.plateNumber).padStart(
-                            2,
-                            "0",
-                          )} · ${plateType} 孔 · 已使用 ${
-                            activePlate.wells.filter(
-                              (well) => well.sample && well.gene,
-                            ).length
-                          } / ${plateType} · ${activePlate.sampleNames.join("、")}`,
-                          `Plate ID ${String(activePlate.plateNumber).padStart(
-                            2,
-                            "0",
-                          )} · ${plateType}-well · ${
-                            activePlate.wells.filter(
-                              (well) => well.sample && well.gene,
-                            ).length
-                          } / ${plateType} used · ${activePlate.sampleNames.join(", ")}`,
+                      <div className="plate-subtitle">
+                        <span>
+                          {tr(
+                            `板号 ${String(activePlate.plateNumber).padStart(
+                              2,
+                              "0",
+                            )} · ${plateType} 孔 · 已使用 ${
+                              activePlate.wells.filter(
+                                (well) => well.sample && well.gene,
+                              ).length
+                            } / ${plateType} · ${activePlate.sampleNames.length} 个样本`,
+                            `Plate ID ${String(activePlate.plateNumber).padStart(
+                              2,
+                              "0",
+                            )} · ${plateType}-well · ${
+                              activePlate.wells.filter(
+                                (well) => well.sample && well.gene,
+                              ).length
+                            } / ${plateType} used · ${activePlate.sampleNames.length} samples`,
+                          )}
+                        </span>
+                        {activePlate.sampleNames.length > 0 && (
+                          <details className="plate-sample-details">
+                            <summary>
+                              {tr("查看样本", "View samples")}
+                            </summary>
+                            <span>
+                              {activePlate.sampleNames.join(
+                                language === "zh" ? "、" : ", ",
+                              )}
+                            </span>
+                          </details>
                         )}
-                      </p>
+                      </div>
                     </div>
                     <div className="plate-actions">
                       <button

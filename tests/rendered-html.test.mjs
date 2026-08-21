@@ -94,3 +94,13 @@ test("declares plate copy, paste, restore, and zoom editing affordances", async 
   assert.match(source, /孔板视图缩放/);
   assert.match(styles, /\.selection-toolbar\s*\{[^}]*position:\s*sticky/s);
 });
+
+test("keeps long plate sample lists collapsed behind a compact summary", async () => {
+  const source = await readFile(
+    new URL("../app/QpcrPlanner.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /activePlate\.sampleNames\.length} 个样本/);
+  assert.match(source, /className="plate-sample-details"/);
+  assert.match(source, /查看样本/);
+});
