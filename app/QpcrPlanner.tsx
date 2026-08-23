@@ -37,6 +37,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type SetStateAction,
   useCallback,
   useEffect,
   useMemo,
@@ -50,68 +51,52 @@ import {
   type ExportablePlate,
 } from "@/lib/exportExcel";
 import {
-  createEntryHistory,
   moveEntryById,
   moveEntryByOffset,
-  recordEntryState,
-  redoEntryState,
-  undoEntryState,
-  type EntryHistory,
   type EntrySnapshot,
 } from "@/lib/entryHistory";
-import {
-  calculateReactionRequirements,
-  DEFAULT_REACTION_SYSTEM,
-  normalizeReactionSystemInput,
-  type LegacyReactionSystemInput,
-  type ReactionSystemInput,
-} from "@/lib/reactionCalculator";
+import { type ReactionSystemInput } from "@/lib/reactionCalculator";
 import {
   generateNumberedEntries,
   MAX_QUICK_ENTRY_COUNT,
   parseQuickEntryCount,
 } from "@/lib/quickEntries";
+import { type PlateEditCommand } from "@/lib/plateEditingSession";
 import {
-  createPlateEditingSession,
-  dispatchPlateEdit,
-  dispatchPlateEdits,
-  type PlateEditCommand,
-  type PlateEditingSession,
-} from "@/lib/plateEditingSession";
+  clearPlannerDraft,
+  loadPlannerDraft,
+  savePlannerDraft,
+} from "@/lib/plannerDraftStorage";
 import {
-  defaultPlateName,
+  createPlannerSession,
+  dispatchPlannerSession,
+  plannerSessionAudit,
+  plannerSessionIsStale,
+  plannerSessionReactionCalculation,
+  type ExperimentSetup,
+  type GeneEntry,
+  type GeneRole,
+  type PlannerLanguage,
+  type PlannerSession,
+  type PlannerSessionCommand,
+  type SampleEntry,
+  type SampleKind,
+} from "@/lib/plannerSession";
+import {
   formatWellId,
   getPlateDimensions,
-  planPlateLayout,
-  validateLayout,
   type GeneType,
   type LayoutFillDirection,
   type LayoutPreset,
   type LoadingPattern,
-  type PlanInput,
   type PlannerPlate,
   type PlannerWell,
   type PlanResult,
   type PlateType,
-  type ValidationIssue,
 } from "@/lib/platePlanner";
 import { ReactionCalculator } from "@/app/ReactionCalculator";
 
-type GeneRole = "target" | "reference";
-type SampleKind = "sample" | "blank";
-type Language = "zh" | "en";
-
-interface GeneEntry {
-  id: string;
-  name: string;
-  role: GeneRole;
-}
-
-interface SampleEntry {
-  id: string;
-  name: string;
-  kind: SampleKind;
-}
+type Language = PlannerLanguage;
 
 interface EditorState {
   plateIndex: number;
@@ -251,93 +236,6 @@ function SortableEntryRow({
   );
 }
 
-interface StoredPlannerState {
-  version: 7;
-  plateType: PlateType;
-  samples: SampleEntry[];
-  genes: GeneEntry[];
-  replicates: number;
-  layoutPreset: LayoutPreset;
-  loadingPattern: LoadingPattern;
-  fillDirection: LayoutFillDirection;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: Partial<ReactionSystemInput>;
-  language: Language;
-}
-
-type StoredPlannerStateV6 = Omit<
-  StoredPlannerState,
-  "version" | "fillDirection"
-> & {
-  version: 6;
-};
-
-type StoredPlannerStateV5 = Omit<
-  StoredPlannerState,
-  "version" | "reactionSystem" | "fillDirection"
-> & {
-  version: 5;
-  reactionSystem?: LegacyReactionSystemInput;
-};
-
-type StoredPlannerStateV4 = Omit<
-  StoredPlannerState,
-  "version" | "reactionSystem" | "fillDirection"
-> & {
-  version: 4;
-  reactionSystem?: LegacyReactionSystemInput;
-};
-
-interface StoredPlannerStateV3 {
-  version: 3;
-  plateType: PlateType;
-  samples: SampleEntry[];
-  genes: GeneEntry[];
-  replicates: number;
-  layoutPreset: LayoutPreset;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: LegacyReactionSystemInput;
-  language: Language;
-}
-
-interface StoredPlannerStateV2 {
-  version: 2;
-  plateType: PlateType;
-  samples: SampleEntry[];
-  genes: GeneEntry[];
-  replicates: number;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: LegacyReactionSystemInput;
-  language: Language;
-}
-
-interface StoredPlannerStateV1 {
-  version: 1;
-  plateType: PlateType;
-  samples: string[];
-  genes: GeneEntry[];
-  replicates: number;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: LegacyReactionSystemInput;
-}
-
-const STORAGE_KEY = "qpcr-plate-planner:v1";
 const TARGET_PALETTE = [
   { background: "#DDE8F2", text: "#29465E" },
   { background: "#DCEBE8", text: "#26564F" },
@@ -354,53 +252,10 @@ function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function clonePlan<T>(value: T): T {
-  if (typeof structuredClone === "function") return structuredClone(value);
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function planInputFromEntries(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-): PlanInput {
-  return {
-    plateType,
-    samples: samples.map((sample) => sample.name.trim()).filter(Boolean),
-    targetGenes: genes
-      .filter((gene) => gene.role === "target" && gene.name.trim())
-      .map((gene) => gene.name.trim()),
-    referenceGenes: genes
-      .filter((gene) => gene.role === "reference" && gene.name.trim())
-      .map((gene) => gene.name.trim()),
-    replicates,
-  };
-}
-
-function withPlateNames(
-  result: PlanResult | null,
-  fallbackLoadingPattern: LoadingPattern = "sequential",
-  fallbackFillDirection: LayoutFillDirection = "vertical",
-) {
-  if (!result) return null;
-  return {
-    ...result,
-    loadingPattern: result.loadingPattern ?? fallbackLoadingPattern,
-    fillDirection: result.fillDirection ?? fallbackFillDirection,
-    plates: result.plates.map((plate) => ({
-      ...plate,
-      name: plate.name?.trim() || defaultPlateName(plate.plateNumber),
-    })),
-  };
-}
-
-function migrateLegacySamples(samples: string[]): SampleEntry[] {
-  return samples.map((name) => ({
-    id: makeId("sample"),
-    name,
-    kind: "sample",
-  }));
+function resolveStateAction<T>(action: SetStateAction<T>, current: T) {
+  return typeof action === "function"
+    ? (action as (value: T) => T)(current)
+    : action;
 }
 
 function parseExcelNames(value: string) {
@@ -416,97 +271,6 @@ function normalizedKey(value: string) {
 
 function defaultLoadingPattern(plateType: PlateType): LoadingPattern {
   return plateType === 384 ? "interleaved-8-channel" : "sequential";
-}
-
-function experimentSignature(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-  layoutPreset: LayoutPreset,
-  loadingPattern: LoadingPattern,
-  fillDirection: LayoutFillDirection,
-) {
-  return JSON.stringify({
-    plateType,
-    samples: samples.map(({ name }) => name),
-    genes: genes.map(({ name, role }) => ({ name, role })),
-    replicates,
-    layoutPreset,
-    loadingPattern,
-    fillDirection,
-  });
-}
-
-function experimentSignatureV3(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-  layoutPreset: LayoutPreset,
-) {
-  return JSON.stringify({
-    plateType,
-    samples: samples.map(({ name }) => name),
-    genes: genes.map(({ name, role }) => ({ name, role })),
-    replicates,
-    layoutPreset,
-  });
-}
-
-function experimentSignatureV2(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-) {
-  return JSON.stringify({
-    plateType,
-    samples: samples.map(({ name }) => name),
-    genes: genes.map(({ name, role }) => ({ name, role })),
-    replicates,
-  });
-}
-
-function inferredLayoutPreset(result: PlanResult | null): LayoutPreset {
-  return result?.strategy === "gene-major" ? "gene-major" : "sample-major";
-}
-
-function migrateLayoutSignature(
-  storedSignature: string,
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-  layoutPreset: LayoutPreset,
-  loadingPattern: LoadingPattern,
-  fillDirection: LayoutFillDirection,
-) {
-  if (!storedSignature) return "";
-  const v2Signature = experimentSignatureV2(
-    plateType,
-    samples,
-    genes,
-    replicates,
-  );
-  const v3Signature = experimentSignatureV3(
-    plateType,
-    samples,
-    genes,
-    replicates,
-    layoutPreset,
-  );
-  return storedSignature === v2Signature || storedSignature === v3Signature
-    ? experimentSignature(
-        plateType,
-        samples,
-        genes,
-        replicates,
-        layoutPreset,
-        loadingPattern,
-        fillDirection,
-      )
-    : storedSignature;
 }
 
 function strategyLabel(strategy: PlanResult["strategy"]) {
@@ -561,22 +325,15 @@ function plateStatus(
 }
 
 export function QpcrPlanner() {
-  const [plateType, setPlateType] = useState<PlateType>(96);
-  const [samples, setSamples] = useState<SampleEntry[]>([]);
-  const [genes, setGenes] = useState<GeneEntry[]>([]);
-  const [entryHistory, setEntryHistory] = useState(() =>
-    createEntryHistory<SampleEntry, GeneEntry>({ samples: [], genes: [] }),
+  const [plannerSession, setPlannerSession] = useState<PlannerSession>(() =>
+    createPlannerSession(),
   );
+  const plannerSessionRef = useRef(plannerSession);
+  useEffect(() => {
+    plannerSessionRef.current = plannerSession;
+  }, [plannerSession]);
   const [draggedEntry, setDraggedEntry] = useState<DraggedEntry | null>(null);
   const [dropTarget, setDropTarget] = useState<DraggedEntry | null>(null);
-  const [language, setLanguage] = useState<Language>("zh");
-  const [replicates, setReplicates] = useState(3);
-  const [layoutPreset, setLayoutPreset] =
-    useState<LayoutPreset>("gene-major");
-  const [loadingPattern, setLoadingPattern] =
-    useState<LoadingPattern>("sequential");
-  const [fillDirection, setFillDirection] =
-    useState<LayoutFillDirection>("vertical");
   const [sampleInput, setSampleInput] = useState("");
   const [sampleInputKind, setSampleInputKind] =
     useState<SampleKind>("sample");
@@ -589,10 +346,6 @@ export function QpcrPlanner() {
   const [genePaste, setGenePaste] = useState("");
   const [sampleQuickCount, setSampleQuickCount] = useState("");
   const [geneQuickCount, setGeneQuickCount] = useState("");
-  const [editingSession, setEditingSession] =
-    useState<PlateEditingSession | null>(null);
-  const [layoutSignature, setLayoutSignature] = useState("");
-  const [generatedAt, setGeneratedAt] = useState("");
   const [activePlateIndex, setActivePlateIndex] = useState(0);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [boxSelection, setBoxSelection] =
@@ -606,11 +359,21 @@ export function QpcrPlanner() {
   const [savedAt, setSavedAt] = useState("");
   const [dirty, setDirty] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [reactionSystem, setReactionSystem] =
-    useState<ReactionSystemInput>(DEFAULT_REACTION_SYSTEM);
-
+  const {
+    plateType,
+    samples,
+    genes,
+    replicates,
+    layoutPreset,
+    loadingPattern,
+    fillDirection,
+  } = plannerSession.setup;
+  const editingSession = plannerSession.plateEditing;
+  const generatedAt = plannerSession.generatedAt;
+  const reactionSystem = plannerSession.reactionSystem;
+  const language = plannerSession.language;
+  const entryHistory = plannerSession.entryHistory;
   const layout = editingSession?.plan ?? null;
-  const automaticLayout = editingSession?.generatedBaseline ?? null;
   const confirmed = useMemo(
     () =>
       Object.fromEntries(
@@ -626,6 +389,67 @@ export function QpcrPlanner() {
   const wellClipboard = editingSession?.clipboard ?? null;
   const undoStack = editingSession?.undoStack ?? [];
   const redoStack = editingSession?.redoStack ?? [];
+
+  function replacePlannerSession(next: PlannerSession) {
+    plannerSessionRef.current = next;
+    setPlannerSession(next);
+  }
+
+  function applyPlannerCommand(command: PlannerSessionCommand) {
+    const result = dispatchPlannerSession(plannerSessionRef.current, command);
+    replacePlannerSession(result.session);
+    return result;
+  }
+
+  function patchPlannerSetup(patch: Partial<ExperimentSetup>) {
+    applyPlannerCommand({ type: "patch-setup", patch });
+  }
+
+  function setPlateType(action: SetStateAction<PlateType>) {
+    patchPlannerSetup({ plateType: resolveStateAction(action, plateType) });
+  }
+
+  function setSamples(action: SetStateAction<SampleEntry[]>) {
+    patchPlannerSetup({ samples: resolveStateAction(action, samples) });
+  }
+
+  function setGenes(action: SetStateAction<GeneEntry[]>) {
+    patchPlannerSetup({ genes: resolveStateAction(action, genes) });
+  }
+
+  function setReplicates(action: SetStateAction<number>) {
+    patchPlannerSetup({ replicates: resolveStateAction(action, replicates) });
+  }
+
+  function setLayoutPreset(action: SetStateAction<LayoutPreset>) {
+    patchPlannerSetup({
+      layoutPreset: resolveStateAction(action, layoutPreset),
+    });
+  }
+
+  function setLoadingPattern(action: SetStateAction<LoadingPattern>) {
+    patchPlannerSetup({
+      loadingPattern: resolveStateAction(action, loadingPattern),
+    });
+  }
+
+  function setFillDirection(action: SetStateAction<LayoutFillDirection>) {
+    patchPlannerSetup({
+      fillDirection: resolveStateAction(action, fillDirection),
+    });
+  }
+
+  function setReactionSystem(action: SetStateAction<ReactionSystemInput>) {
+    const next = resolveStateAction(action, reactionSystem);
+    applyPlannerCommand({
+      type: "set-reaction-system",
+      reactionSystem: next,
+    });
+  }
+
+  function setLanguage(language: Language) {
+    applyPlannerCommand({ type: "set-language", language });
+  }
 
   const tr = useCallback(
     (zh: string, en: string) => (language === "zh" ? zh : en),
@@ -697,39 +521,7 @@ export function QpcrPlanner() {
     [completeGenes],
   );
 
-  const planInput: PlanInput = useMemo(
-    () => ({
-      plateType,
-      samples: sampleNames,
-      targetGenes,
-      referenceGenes,
-      replicates,
-    }),
-    [plateType, referenceGenes, replicates, sampleNames, targetGenes],
-  );
-
-  const currentSignature = useMemo(
-    () =>
-      experimentSignature(
-        plateType,
-        samples,
-        genes,
-        replicates,
-        layoutPreset,
-        loadingPattern,
-        fillDirection,
-      ),
-    [
-      fillDirection,
-      genes,
-      layoutPreset,
-      loadingPattern,
-      plateType,
-      replicates,
-      samples,
-    ],
-  );
-  const settingsStale = Boolean(layout && layoutSignature !== currentSignature);
+  const settingsStale = plannerSessionIsStale(plannerSession);
   const reactionWells =
     sampleNames.length * completeGenes.length * replicates;
   const effectiveBlocks =
@@ -837,27 +629,12 @@ export function QpcrPlanner() {
   ]);
 
   const audit = useMemo(
-    () =>
-      !layout
-        ? { valid: false, errors: [] as ValidationIssue[] }
-        : settingsStale
-          ? validateLayout(layout, planInput)
-          : (editingSession?.audit ?? validateLayout(layout, planInput)),
-    [editingSession, layout, planInput, settingsStale],
+    () => plannerSessionAudit(plannerSession),
+    [plannerSession],
   );
   const reactionCalculation = useMemo(
-    () =>
-      calculateReactionRequirements(
-        layout,
-        reactionSystem,
-        sampleNames,
-        completeGenes.map((gene) => ({
-          name: gene.name,
-          role: gene.role,
-        })),
-        blankSampleNames,
-      ),
-    [blankSampleNames, completeGenes, layout, reactionSystem, sampleNames],
+    () => plannerSessionReactionCalculation(plannerSession),
+    [plannerSession],
   );
 
   const activePlate = layout?.plates[activePlateIndex] ?? null;
@@ -876,283 +653,20 @@ export function QpcrPlanner() {
       layout.plates.every((plate) => confirmed[String(plate.plateNumber)]),
   );
 
-  function restoreEditingSession(
-    restoredLayout: PlanResult | null,
-    restoredBaseline: PlanResult | null,
-    restoredPlateType: PlateType,
-    restoredSamples: SampleEntry[],
-    restoredGenes: GeneEntry[],
-    restoredReplicates: number,
-    restoredConfirmed: Record<string, boolean>,
-  ) {
-    if (!restoredLayout || !restoredBaseline) {
-      setEditingSession(null);
-      return;
-    }
-    setEditingSession(
-      createPlateEditingSession({
-        plan: restoredLayout,
-        generatedBaseline: restoredBaseline,
-        planInput: planInputFromEntries(
-          restoredPlateType,
-          restoredSamples,
-          restoredGenes,
-          restoredReplicates,
-        ),
-        confirmedPlateNumbers: Object.entries(restoredConfirmed)
-          .filter(([, isConfirmed]) => isConfirmed)
-          .map(([plateNumber]) => Number(plateNumber)),
-      }),
-    );
-  }
-
   useEffect(() => {
     const restoreTimer = window.setTimeout(() => {
       try {
-        const saved = window.localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved) as
-            | StoredPlannerState
-            | StoredPlannerStateV6
-            | StoredPlannerStateV5
-            | StoredPlannerStateV4
-            | StoredPlannerStateV3
-            | StoredPlannerStateV2
-            | StoredPlannerStateV1;
-          if (parsed.version === 1) {
-            const migratedSamples = migrateLegacySamples(parsed.samples);
-            const migratedPreset = inferredLayoutPreset(parsed.layout);
-            const migratedLoadingPattern: LoadingPattern = "sequential";
-            const migratedFillDirection: LayoutFillDirection = "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(migratedSamples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(migratedSamples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(migratedPreset);
-            setLoadingPattern(migratedLoadingPattern);
-            setFillDirection(migratedFillDirection);
-            restoreEditingSession(
-              withPlateNames(
-                parsed.layout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-              withPlateNames(
-                parsed.automaticLayout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-              parsed.plateType,
-              migratedSamples,
-              parsed.genes,
-              parsed.replicates,
-              parsed.confirmed,
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                migratedSamples,
-                parsed.genes,
-                parsed.replicates,
-                migratedPreset,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
+        const restored = loadPlannerDraft(window.localStorage);
+        if (restored) {
+          replacePlannerSession(restored.session);
+          if (restored.ok) {
             setSavedAt("restored");
-          } else if (parsed.version === 2) {
-            const migratedPreset = inferredLayoutPreset(parsed.layout);
-            const migratedLoadingPattern: LoadingPattern = "sequential";
-            const migratedFillDirection: LayoutFillDirection = "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(migratedPreset);
-            setLoadingPattern(migratedLoadingPattern);
-            setFillDirection(migratedFillDirection);
-            restoreEditingSession(
-              withPlateNames(
-                parsed.layout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-              withPlateNames(
-                parsed.automaticLayout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-              parsed.plateType,
-              parsed.samples,
-              parsed.genes,
-              parsed.replicates,
-              parsed.confirmed,
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                parsed.samples,
-                parsed.genes,
-                parsed.replicates,
-                migratedPreset,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
-          } else if (parsed.version === 3) {
-            const migratedLoadingPattern: LoadingPattern = "sequential";
-            const migratedFillDirection: LayoutFillDirection = "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(parsed.layoutPreset);
-            setLoadingPattern(migratedLoadingPattern);
-            setFillDirection(migratedFillDirection);
-            restoreEditingSession(
-              withPlateNames(
-                parsed.layout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-              withPlateNames(
-                parsed.automaticLayout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-              parsed.plateType,
-              parsed.samples,
-              parsed.genes,
-              parsed.replicates,
-              parsed.confirmed,
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                parsed.samples,
-                parsed.genes,
-                parsed.replicates,
-                parsed.layoutPreset,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
-          } else if (
-            parsed.version === 4 ||
-            parsed.version === 5 ||
-            parsed.version === 6
-          ) {
-            const restoredFillDirection: LayoutFillDirection = "vertical";
-            const restoredLoadingPattern =
-              parsed.plateType === 96
-                ? "sequential"
-                : (parsed.loadingPattern ??
-                  defaultLoadingPattern(parsed.plateType));
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(parsed.layoutPreset);
-            setLoadingPattern(restoredLoadingPattern);
-            setFillDirection(restoredFillDirection);
-            restoreEditingSession(
-              withPlateNames(
-                parsed.layout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-              withPlateNames(
-                parsed.automaticLayout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-              parsed.plateType,
-              parsed.samples,
-              parsed.genes,
-              parsed.replicates,
-              parsed.confirmed,
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                parsed.samples,
-                parsed.genes,
-                parsed.replicates,
-                parsed.layoutPreset,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
-          } else if (parsed.version === 7) {
-            const restoredLoadingPattern =
-              parsed.plateType === 96
-                ? "sequential"
-                : (parsed.loadingPattern ??
-                  defaultLoadingPattern(parsed.plateType));
-            const restoredFillDirection =
-              parsed.fillDirection ?? "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(parsed.layoutPreset);
-            setLoadingPattern(restoredLoadingPattern);
-            setFillDirection(restoredFillDirection);
-            restoreEditingSession(
-              withPlateNames(
-                parsed.layout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-              withPlateNames(
-                parsed.automaticLayout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-              parsed.plateType,
-              parsed.samples,
-              parsed.genes,
-              parsed.replicates,
-              parsed.confirmed,
-            );
-            setLayoutSignature(parsed.layoutSignature);
-            setGeneratedAt(parsed.generatedAt);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
+          } else {
+            setToast({
+              tone: "error",
+              message:
+                "未能恢复上次保存的方案，但不会影响新建布局。 / The saved plan could not be restored; a new plan can still be created.",
+            });
           }
         }
       } catch {
@@ -1194,8 +708,10 @@ export function QpcrPlanner() {
 
   function runPlateEdit(command: PlateEditCommand) {
     if (!editingSession) return null;
-    const result = dispatchPlateEdit(editingSession, command);
-    setEditingSession(result.session);
+    const result = applyPlannerCommand({
+      type: "edit-plate",
+      command,
+    });
     if (
       result.outcome.status === "applied" ||
       result.outcome.status === "undone" ||
@@ -1208,48 +724,33 @@ export function QpcrPlanner() {
 
   function runPlateEdits(commands: PlateEditCommand[]) {
     if (!editingSession || commands.length === 0) return null;
-    const result = dispatchPlateEdits(editingSession, commands);
-    setEditingSession(result.session);
+    const result = applyPlannerCommand({
+      type: "edit-plate-many",
+      commands,
+    });
     if (["applied", "undone", "redone"].includes(result.outcome.status)) {
       markChanged();
     }
     return result;
   }
 
-  function replaceEntryHistory(nextSamples: SampleEntry[], nextGenes: GeneEntry[]) {
-    setEntryHistory(
-      createEntryHistory({ samples: nextSamples, genes: nextGenes }),
-    );
-  }
-
   function commitEntrySnapshot(
     next: EntrySnapshot<SampleEntry, GeneEntry>,
   ) {
-    const syncedHistory = {
-      ...entryHistory,
-      present: { samples: [...samples], genes: [...genes] },
-    };
-    setEntryHistory(recordEntryState(syncedHistory, next));
-    setSamples(next.samples);
-    setGenes(next.genes);
+    applyPlannerCommand({
+      type: "commit-entries",
+      samples: next.samples,
+      genes: next.genes,
+    });
     markChanged();
   }
 
   function transitionEntries(
-    transition: (
-      history: EntryHistory<SampleEntry, GeneEntry>,
-    ) => EntryHistory<SampleEntry, GeneEntry>,
+    command: "undo-entries" | "redo-entries",
     message: string,
   ) {
-    const syncedHistory = {
-      ...entryHistory,
-      present: { samples: [...samples], genes: [...genes] },
-    };
-    const next = transition(syncedHistory);
-    if (next === syncedHistory) return false;
-    setEntryHistory(next);
-    setSamples(next.present.samples);
-    setGenes(next.present.genes);
+    const result = applyPlannerCommand({ type: command });
+    if (result.outcome.status === "noop") return false;
     markChanged();
     setToast({
       tone: "neutral",
@@ -1260,14 +761,14 @@ export function QpcrPlanner() {
 
   function undoEntries() {
     return transitionEntries(
-      undoEntryState,
+      "undo-entries",
       tr("已撤销上一次参数编辑。", "Undid the last setup edit."),
     );
   }
 
   function redoEntries() {
     return transitionEntries(
-      redoEntryState,
+      "redo-entries",
       tr("已重做参数编辑。", "Redid the setup edit."),
     );
   }
@@ -1518,21 +1019,25 @@ export function QpcrPlanner() {
       { id: makeId("gene"), name: "ZNF436", role: "target" },
       { id: makeId("gene"), name: "CHMP2A", role: "target" },
     ];
-    setPlateType(96);
-    setSamples(exampleSamples);
+    replacePlannerSession(
+      createPlannerSession({
+        plateType: 96,
+        samples: exampleSamples,
+        genes: exampleGenes,
+        replicates: 3,
+        layoutPreset: "gene-major",
+        loadingPattern: "sequential",
+        fillDirection: "vertical",
+        reactionSystem: plannerSessionRef.current.reactionSystem,
+        language: plannerSessionRef.current.language,
+      }),
+    );
     setSampleInput("");
     setSampleInputKind("sample");
     setSampleDraftOpen(false);
-    setGenes(exampleGenes);
-    replaceEntryHistory(exampleSamples, exampleGenes);
     setGeneInput("");
     setGeneInputRole("target");
     setGeneDraftOpen(false);
-    setReplicates(3);
-    setLayoutPreset("gene-major");
-    setLoadingPattern("sequential");
-    setFillDirection("vertical");
-    setEditingSession(null);
     setActivePlateIndex(0);
     markChanged();
     setToast({
@@ -1563,21 +1068,14 @@ export function QpcrPlanner() {
       return;
     }
     try {
-      const next = planPlateLayout(planInput, {
-        strategy: layoutPreset,
-        loadingPattern,
-        fillDirection,
+      const result = applyPlannerCommand({
+        type: "generate-layout",
+        generatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
       });
-      const now = new Date().toLocaleString("zh-CN", { hour12: false });
-      setEditingSession(
-        createPlateEditingSession({
-          plan: next,
-          generatedBaseline: clonePlan(next),
-          planInput,
-        }),
-      );
-      setLayoutSignature(currentSignature);
-      setGeneratedAt(now);
+      if (result.outcome.status === "rejected") {
+        throw new Error(result.outcome.message ?? "Unable to generate layout");
+      }
+      const plateCount = result.session.plateEditing?.plan.plates.length ?? 0;
       setActivePlateIndex(0);
       markChanged();
       setToast({
@@ -1585,12 +1083,12 @@ export function QpcrPlanner() {
         message:
           layoutPreset === "gene-major"
             ? tr(
-                `已按基因排列生成 ${next.plates.length} 块 ${plateType} 孔板；每个基因内保持样本输入顺序。`,
-                `Generated ${next.plates.length} ${plateType}-well plate(s) by assay; sample input order is preserved within every assay.`,
+                `已按基因排列生成 ${plateCount} 块 ${plateType} 孔板；每个基因内保持样本输入顺序。`,
+                `Generated ${plateCount} ${plateType}-well plate(s) by assay; sample input order is preserved within every assay.`,
               )
             : tr(
-                `已按样本排列生成 ${next.plates.length} 块 ${plateType} 孔板；目的基因跨板时会重新安排该样本的全部内参。`,
-                `Generated ${next.plates.length} ${plateType}-well plate(s) by sample; all references are rerun whenever a sample's targets continue onto another plate.`,
+                `已按样本排列生成 ${plateCount} 块 ${plateType} 孔板；目的基因跨板时会重新安排该样本的全部内参。`,
+                `Generated ${plateCount} ${plateType}-well plate(s) by sample; all references are rerun whenever a sample's targets continue onto another plate.`,
               ),
       });
     } catch (error) {
@@ -1612,63 +1110,9 @@ export function QpcrPlanner() {
     runPlateEdit({ type: "redo" });
   }
 
-  useEffect(() => {
-    const handleKeyboard = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey)) {
-        return;
-      }
-      const activeElement = document.activeElement;
-      if (
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement ||
-        activeElement instanceof HTMLSelectElement
-      ) {
-        return;
-      }
-      const key = event.key.toLowerCase();
-      if (key === "c" && selectedWellIds.length > 0) {
-        event.preventDefault();
-        copySelection();
-        return;
-      }
-      if (key === "v" && wellClipboard) {
-        event.preventDefault();
-        pasteSelection();
-        return;
-      }
-      if (key === "z") {
-        event.preventDefault();
-        if (event.shiftKey) {
-          if (!redoEntries() && redoStack.length > 0) redoLayout();
-        } else if (!undoEntries() && undoStack.length > 0) {
-          undoLayout();
-        }
-      }
-    };
-    window.addEventListener("keydown", handleKeyboard);
-    return () => window.removeEventListener("keydown", handleKeyboard);
-  });
-
   function savePlanner() {
-    const payload: StoredPlannerState = {
-      version: 7,
-      plateType,
-      samples,
-      genes,
-      replicates,
-      layoutPreset,
-      loadingPattern,
-      fillDirection,
-      layout,
-      automaticLayout,
-      layoutSignature,
-      generatedAt,
-      confirmed,
-      reactionSystem,
-      language,
-    };
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      savePlannerDraft(window.localStorage, plannerSession);
       const time = new Date().toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
@@ -1707,7 +1151,7 @@ export function QpcrPlanner() {
     }
 
     try {
-      window.localStorage.removeItem(STORAGE_KEY);
+      clearPlannerDraft(window.localStorage);
     } catch {
       setToast({
         tone: "error",
@@ -1719,16 +1163,9 @@ export function QpcrPlanner() {
       return;
     }
 
-    setPlateType(96);
-    setSamples([]);
-    setGenes([]);
-    replaceEntryHistory([], []);
+    applyPlannerCommand({ type: "reset" });
     setDraggedEntry(null);
     setDropTarget(null);
-    setReplicates(3);
-    setLayoutPreset("gene-major");
-    setLoadingPattern("sequential");
-    setFillDirection("vertical");
     setSampleInput("");
     setSampleInputKind("sample");
     setSampleDraftOpen(false);
@@ -1739,14 +1176,10 @@ export function QpcrPlanner() {
     setGenePaste("");
     setSampleQuickCount("");
     setGeneQuickCount("");
-    setEditingSession(null);
-    setLayoutSignature("");
-    setGeneratedAt("");
     setActivePlateIndex(0);
     setEditor(null);
     setEditingPlateName(false);
     setPlateNameDraft("");
-    setReactionSystem({ ...DEFAULT_REACTION_SYSTEM });
     setSavedAt("");
     setDirty(false);
     setToast({
@@ -2058,6 +1491,43 @@ export function QpcrPlanner() {
     return true;
   }
 
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "c" && selectedWellIds.length > 0) {
+        event.preventDefault();
+        copySelection();
+        return;
+      }
+      if (key === "v" && wellClipboard) {
+        event.preventDefault();
+        pasteSelection();
+        return;
+      }
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          if (!redoEntries() && redoStack.length > 0) redoLayout();
+        } else if (!undoEntries() && undoStack.length > 0) {
+          undoLayout();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  });
+
   function restoreSelectedFromAutomatic() {
     if (
       !layout ||
@@ -2122,7 +1592,6 @@ export function QpcrPlanner() {
       runPlateEdit({ type: "set-move-mode", enabled: false });
       return;
     }
-    setEditingSession({ ...result.session, moveMode: false });
     setToast({
       tone: "neutral",
       message: tr(

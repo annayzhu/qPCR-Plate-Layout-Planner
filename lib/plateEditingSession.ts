@@ -708,7 +708,7 @@ export function dispatchPlateEdit(
       }
       return rejected(session, moved.reason);
     }
-    return appliedMutation(
+    const applied = appliedMutation(
       session,
       replacePlate(session.plan, moved.plate),
       {
@@ -718,6 +718,10 @@ export function dispatchPlateEdit(
       },
       [command.plateNumber],
     );
+    return {
+      ...applied,
+      session: { ...applied.session, moveMode: false },
+    };
   }
 
   if (command.type === "set-move-mode") {
