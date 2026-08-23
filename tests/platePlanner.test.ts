@@ -655,6 +655,177 @@ test("minimizes reference reruns within the same three-plate solution", () => {
   assert.equal(validateLayout(result, input).valid, true);
 });
 
+test("keeps every feasible comparison-group assay unit on one plate even when that adds a plate", () => {
+  const samples = Array.from({ length: 15 }, (_, index) => `S${index + 1}`);
+  const input = {
+    plateType: 96 as const,
+    samples,
+    sampleDesigns: samples.map((name, index) => ({
+      name,
+      cellLine: `Cell-${Math.floor(index / 5) + 1}`,
+      comparisonGroup: "Treatment",
+    })),
+    targetGenes: ["G1", "G2", "G3"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+
+  const legacy = planPlateLayout({ ...input, sampleDesigns: undefined });
+  const grouped = planPlateLayout(input);
+
+  assert.equal(legacy.plates.length, 2);
+  assert.equal(grouped.plates.length, 3);
+  for (const cellLine of ["Cell-1", "Cell-2", "Cell-3"]) {
+    const groupSamples = input.sampleDesigns
+      .filter((sample) => sample.cellLine === cellLine)
+      .map((sample) => sample.name);
+    for (const gene of input.targetGenes) {
+      const plateNumbers = grouped.plates
+        .filter((plate) =>
+          plate.wells.some(
+            (well) =>
+              well.gene === gene &&
+              well.geneType === "target" &&
+              groupSamples.includes(well.sample ?? ""),
+          ),
+        )
+        .map((plate) => plate.plateNumber);
+      assert.equal(new Set(plateNumbers).size, 1);
+    }
+  }
+  assert.equal(validateLayout(grouped, input).valid, true);
+});
+
+test("rejects an oversized comparison unit until an explicit bridge sample is selected", () => {
+  const samples = Array.from({ length: 17 }, (_, index) => `S${index + 1}`);
+  const baseInput = {
+    plateType: 96 as const,
+    samples,
+    sampleDesigns: samples.map((name) => ({
+      name,
+      cellLine: "A549",
+      comparisonGroup: "FBN2 knockdown",
+    })),
+    targetGenes: ["G1"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+
+  assert.throws(
+    () => planPlateLayout(baseInput),
+    (error) =>
+      error instanceof PlatePlannerError &&
+      error.code === "E_COMPARISON_UNIT_TOO_LARGE",
+  );
+
+  const input = {
+    ...baseInput,
+    sampleDesigns: baseInput.sampleDesigns.map((sample, index) => ({
+      ...sample,
+      isBridge: index === 0,
+    })),
+  };
+  const result = planPlateLayout(input);
+  assert.equal(result.plates.length, 2);
+  for (const plate of result.plates) {
+    assert.equal(
+      plate.wells.filter(
+        (well) => well.sample === "S1" && well.gene === "G1",
+      ).length,
+      3,
+    );
+    assert.equal(
+      plate.wells.filter(
+        (well) => well.sample === "S1" && well.gene === "R1",
+      ).length,
+      3,
+    );
+  }
+  assert.equal(validateLayout(result, input).valid, true);
+});
+
+test("rejects ambiguous comparison metadata and bridge assignments", () => {
+  const common = {
+    plateType: 96 as const,
+    samples: ["S1"],
+    targetGenes: ["G1"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+  assert.throws(
+    () =>
+      planPlateLayout({
+        ...common,
+        sampleDesigns: [{ name: "S1", comparisonGroup: "KD" }],
+      }),
+    (error) =>
+      error instanceof PlatePlannerError &&
+      error.code === "E_COMPARISON_GROUP_REQUIRES_CELL_LINE",
+  );
+  assert.throws(
+    () =>
+      planPlateLayout({
+        ...common,
+        sampleDesigns: [{ name: "S1", isBridge: true }],
+      }),
+    (error) =>
+      error instanceof PlatePlannerError &&
+      error.code === "E_BRIDGE_REQUIRES_COMPARISON_GROUP",
+  );
+  assert.throws(
+    () =>
+      planPlateLayout({
+        ...common,
+        sampleDesigns: [
+          { name: "S1", kind: "blank" as const, cellLine: "A549" },
+        ],
+      }),
+    (error) =>
+      error instanceof PlatePlannerError &&
+      error.code === "E_BLANK_COMPARISON_METADATA",
+  );
+});
+
+test("comparison units remain intact in both 384-well loading patterns", () => {
+  const samples = Array.from({ length: 70 }, (_, index) => `S${index + 1}`);
+  const input = {
+    plateType: 384 as const,
+    samples,
+    sampleDesigns: samples.map((name, index) => ({
+      name,
+      cellLine: `Cell-${Math.floor(index / 10) + 1}`,
+      comparisonGroup: "Control-vs-treatment",
+    })),
+    targetGenes: ["G1", "G2", "G3", "G4"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+
+  for (const loadingPattern of [
+    "sequential",
+    "interleaved-8-channel",
+  ] as const) {
+    const result = planPlateLayout(input, {
+      strategy: "gene-major",
+      loadingPattern,
+    });
+    assert.ok(result.plates.length > 1);
+    for (let group = 1; group <= 7; group += 1) {
+      const groupSamples = samples.slice((group - 1) * 10, group * 10);
+      for (const gene of input.targetGenes) {
+        const plates = result.plates.filter((plate) =>
+          plate.wells.some(
+            (well) =>
+              well.gene === gene && groupSamples.includes(well.sample ?? ""),
+          ),
+        );
+        assert.equal(plates.length, 1);
+      }
+    }
+    assert.equal(validateLayout(result, input).valid, true);
+  }
+});
+
 test("validation catches a missing same-plate reference block", () => {
   const input = {
     plateType: 96 as const,

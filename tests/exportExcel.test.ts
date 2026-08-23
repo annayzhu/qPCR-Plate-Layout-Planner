@@ -452,3 +452,94 @@ test("single and batch plate filenames share the dated safe naming helper", () =
     "qPCR_All_Plates_Overview_20260731.xlsx",
   );
 });
+
+test("comparison and bridge metadata are exported with actual bridge well usage", async () => {
+  const samples = Array.from({ length: 17 }, (_, index) => `S${index + 1}`);
+  const sampleDesigns = samples.map((name, index) => ({
+    name,
+    kind: "sample" as const,
+    cellLine: "A549",
+    comparisonGroup: "FBN2 knockdown",
+    isBridge: index === 0,
+  }));
+  const layout = planPlateLayout({
+    plateType: 96,
+    samples,
+    sampleDesigns,
+    targetGenes: ["G1"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  });
+  const context: ExportContext = {
+    plateType: 96,
+    replicates: 3,
+    samples,
+    sampleDesigns,
+    targetGenes: ["G1"],
+    referenceGenes: ["R1"],
+    strategyLabel: "按基因排列 / By assay",
+    layoutStrategy: "gene-major",
+    generatedAt: "2026-08-23 12:00:00",
+    validationStatus: "Valid",
+    splitSamples: layout.metrics.splitSamples,
+    repeatedReferenceBlocks: layout.metrics.repeatedReferenceBlocks,
+    repeatedReferenceWells: layout.metrics.repeatedReferenceWells,
+    reactionSystem: {
+      cdnaPerWellUl: 1,
+      forwardPrimerPerWellUl: 0.2,
+      reversePrimerPerWellUl: 0.2,
+      primerStockConcentrationUm: 10,
+      masterMixPerWellUl: 5,
+      totalPerWellUl: 10,
+      overagePercent: 12,
+      geneMixPreparationMode: "eight-strip",
+    },
+  };
+
+  for (const plate of layout.plates) {
+    const { XLSX, workbook } = await buildPlateWorkbook(
+      { ...plate, confirmed: true },
+      context,
+    );
+    const detailRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(
+      workbook.Sheets.Well_Detail,
+    );
+    const bridgeDetail = detailRows.find(
+      (row) => row["样本 / Sample"] === "S1",
+    );
+    assert.equal(bridgeDetail?.["细胞系 / Cell line"], "A549");
+    assert.equal(
+      bridgeDetail?.["比较组 / Comparison group"],
+      "FBN2 knockdown",
+    );
+    assert.equal(bridgeDetail?.["桥接样本 / Bridge sample"], "是 / Yes");
+    assert.match(
+      String(bridgeDetail?.["跨板原因 / Cross-plate reason"]),
+      /bridge/i,
+    );
+
+    const sampleRows = XLSX.utils.sheet_to_json<Record<string, string | number>>(
+      workbook.Sheets.Sample_cDNA,
+    );
+    const bridgeUsage = sampleRows.find(
+      (row) => row["样本 / Sample"] === "S1",
+    );
+    const actualBridgeWells = plate.wells.filter(
+      (well) => well.sample === "S1" && well.gene,
+    ).length;
+    assert.equal(bridgeUsage?.["孔数 / Well count"], actualBridgeWells);
+    assert.equal(bridgeUsage?.["桥接样本 / Bridge sample"], "是 / Yes");
+
+    const summaryRows = XLSX.utils.sheet_to_json<Array<string | number>>(
+      workbook.Sheets.Design_Summary,
+      { header: 1 },
+    );
+    assert.ok(
+      summaryRows.some(
+        (row) =>
+          row[0] === "本板比较单元 / Comparison units on plate" &&
+          String(row[1]).includes("A549 / FBN2 knockdown"),
+      ),
+    );
+  }
+});

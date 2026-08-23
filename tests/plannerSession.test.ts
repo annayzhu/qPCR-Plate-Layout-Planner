@@ -47,7 +47,14 @@ test("restores v1 string samples into a Planner Session", () => {
 
   assert.equal(restored.ok, true);
   assert.equal(restored.migratedFrom, 1);
-  assert.deepEqual(restored.session.setup.samples, samples);
+  assert.deepEqual(restored.session.setup.samples, [
+    {
+      ...samples[0],
+      cellLine: "",
+      comparisonGroup: "",
+      isBridge: false,
+    },
+  ]);
   assert.equal(restored.session.setup.layoutPreset, "sample-major");
   assert.equal(restored.session.setup.loadingPattern, "sequential");
   assert.equal(restored.session.setup.fillDirection, "vertical");
@@ -127,7 +134,15 @@ test("restores v4-v6 384-well defaults through one migration policy", () => {
 });
 
 test("current payload round-trips plan, baseline, confirmations, and reaction setup", () => {
-  let session = createPlannerSession({ samples, genes });
+  let session = createPlannerSession({
+    samples: samples.map((sample) => ({
+      ...sample,
+      cellLine: "A549",
+      comparisonGroup: "FBN2 KD",
+      isBridge: true,
+    })),
+    genes,
+  });
   session = dispatchPlannerSession(session, {
     type: "generate-layout",
     generatedAt: "2026-08-23 10:00",
@@ -140,7 +155,9 @@ test("current payload round-trips plan, baseline, confirmations, and reaction se
   const serialized = serializePlannerSession(session);
   const restored = restorePlannerSession(serialized);
   assert.equal(restored.ok, true);
-  assert.equal(restored.migratedFrom, 8);
+  assert.equal(restored.migratedFrom, 9);
+  assert.equal(restored.session.setup.samples[0]?.cellLine, "A549");
+  assert.equal(restored.session.setup.samples[0]?.isBridge, true);
   assert.equal(restored.session.plateEditing?.confirmedPlateNumbers.has(1), true);
   assert.deepEqual(
     restored.session.plateEditing?.generatedBaseline,
@@ -153,7 +170,7 @@ test("current payload round-trips plan, baseline, confirmations, and reaction se
   );
 });
 
-test("restores v7 and upgrades it to a stable v8 payload", () => {
+test("restores v7 and upgrades it to a stable v9 payload", () => {
   const plan = legacyPlan();
   plan.plates[0].name = "Legacy validation plate";
   const restoredV7 = restorePlannerSession(
@@ -185,12 +202,41 @@ test("restores v7 and upgrades it to a stable v8 payload", () => {
   assert.equal(restoredV7.session.reactionSystem.totalUl, 20);
 
   const upgraded = serializePlannerSession(restoredV7.session);
-  assert.equal(JSON.parse(upgraded).version, 8);
+  assert.equal(JSON.parse(upgraded).version, 9);
   const restoredV8 = restorePlannerSession(upgraded);
   assert.deepEqual(
     JSON.parse(serializePlannerSession(restoredV8.session)),
     JSON.parse(upgraded),
   );
+});
+
+test("migrates a v8 draft with empty comparison metadata", () => {
+  const v8 = {
+    version: 8,
+    setup: {
+      plateType: 96,
+      samples,
+      genes,
+      replicates: 3,
+      layoutPreset: "gene-major",
+      loadingPattern: "sequential",
+      fillDirection: "vertical",
+    },
+    plateEditing: null,
+    generation: { layoutSignature: "", generatedAt: "" },
+    reactionSystem: createPlannerSession().reactionSystem,
+    language: "zh",
+  };
+  const restored = restorePlannerSession(JSON.stringify(v8));
+  assert.equal(restored.ok, true);
+  assert.equal(restored.migratedFrom, 8);
+  assert.deepEqual(restored.session.setup.samples[0], {
+    ...samples[0],
+    cellLine: "",
+    comparisonGroup: "",
+    isBridge: false,
+  });
+  assert.equal(JSON.parse(serializePlannerSession(restored.session)).version, 9);
 });
 
 test("a restored session still invalidates confirmation after a manual edit", () => {

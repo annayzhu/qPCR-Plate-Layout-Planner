@@ -15,9 +15,18 @@ export interface PlanOptions {
 export interface PlanInput {
   plateType: PlateType;
   samples: string[];
+  sampleDesigns?: PlanSampleDesign[];
   targetGenes: string[];
   referenceGenes: string[];
   replicates: number;
+}
+
+export interface PlanSampleDesign {
+  name: string;
+  kind?: "sample" | "blank";
+  cellLine?: string;
+  comparisonGroup?: string;
+  isBridge?: boolean;
 }
 
 export interface PlannerWell {
@@ -29,6 +38,10 @@ export interface PlannerWell {
   geneType: GeneType | null;
   replicateIndex: number | null;
   source: LayoutSource;
+  cellLine?: string;
+  comparisonGroup?: string;
+  isBridge?: boolean;
+  crossPlateReason?: string;
 }
 
 export interface PlannerPlate {
@@ -72,6 +85,7 @@ export interface ValidationIssue {
   message: string;
   plateNumber?: number;
   wellIds?: string[];
+  severity?: "warning" | "high";
 }
 
 export interface ValidationResult {
@@ -88,6 +102,13 @@ interface AssayBlock {
 interface TargetPair {
   sample: string;
   gene: string;
+}
+
+interface AllocationUnit {
+  pairs: TargetPair[];
+  sampleOrder: number;
+  geneOrder: number;
+  splitOrder: number;
 }
 
 interface PackedPlate {
@@ -195,11 +216,81 @@ function normalized(values: string[], label: "sample" | "gene") {
   return cleaned;
 }
 
+function normalizedDesignText(value?: string) {
+  return value?.trim() ?? "";
+}
+
+function comparisonKey(cellLine: string, comparisonGroup: string) {
+  return `${cellLine.trim().toLocaleLowerCase()}\u0000${comparisonGroup
+    .trim()
+    .toLocaleLowerCase()}`;
+}
+
+function normalizeSampleDesigns(
+  samples: string[],
+  rawDesigns: PlanSampleDesign[] = [],
+) {
+  const sampleByKey = new Map(
+    samples.map((sample) => [sample.toLocaleLowerCase(), sample]),
+  );
+  const supplied = new Map<string, PlanSampleDesign>();
+  for (const raw of rawDesigns) {
+    const key = raw.name.trim().toLocaleLowerCase();
+    if (!sampleByKey.has(key)) {
+      throw new PlatePlannerError(
+        "E_UNKNOWN_SAMPLE_DESIGN",
+        `样本设计信息中的“${raw.name}”不在样本列表中。 / Sample design metadata refers to an unknown sample.`,
+      );
+    }
+    if (supplied.has(key)) {
+      throw new PlatePlannerError(
+        "E_DUPLICATE_SAMPLE_DESIGN",
+        `样本“${raw.name}”的设计信息重复。 / Sample design metadata is duplicated.`,
+      );
+    }
+    supplied.set(key, raw);
+  }
+
+  return samples.map((name) => {
+    const raw = supplied.get(name.toLocaleLowerCase());
+    const cellLine = normalizedDesignText(raw?.cellLine);
+    const comparisonGroup = normalizedDesignText(raw?.comparisonGroup);
+    const isBridge = Boolean(raw?.isBridge);
+    const kind = raw?.kind ?? "sample";
+    if (comparisonGroup && !cellLine) {
+      throw new PlatePlannerError(
+        "E_COMPARISON_GROUP_REQUIRES_CELL_LINE",
+        `样本“${name}”设置比较组时必须同时填写细胞系。 / A comparison group requires a cell line.`,
+      );
+    }
+    if (isBridge && !comparisonGroup) {
+      throw new PlatePlannerError(
+        "E_BRIDGE_REQUIRES_COMPARISON_GROUP",
+        `样本“${name}”只有加入比较组后才能设为桥接样本。 / A bridge sample must belong to a comparison group.`,
+      );
+    }
+    if (kind === "blank" && (cellLine || comparisonGroup || isBridge)) {
+      throw new PlatePlannerError(
+        "E_BLANK_COMPARISON_METADATA",
+        `Blank“${name}”不能设置细胞系、比较组或桥接状态。 / A Blank cannot have cell-line, comparison-group, or bridge metadata.`,
+      );
+    }
+    return {
+      name,
+      kind,
+      cellLine,
+      comparisonGroup,
+      isBridge,
+    } satisfies PlanSampleDesign;
+  });
+}
+
 function validateInput(input: PlanInput) {
   const dimensions = getPlateDimensions(input.plateType);
   const samples = normalized(input.samples, "sample");
   const targetGenes = normalized(input.targetGenes, "gene");
   const referenceGenes = normalized(input.referenceGenes, "gene");
+  const sampleDesigns = normalizeSampleDesigns(samples, input.sampleDesigns);
 
   if (samples.length === 0) {
     throw new PlatePlannerError(
@@ -259,6 +350,7 @@ function validateInput(input: PlanInput) {
     samples,
     targetGenes,
     referenceGenes,
+    sampleDesigns,
     dimensions,
     blocksPerRow,
     blockCapacity,
@@ -820,6 +912,214 @@ function packingSignature(plates: PackedPlate[]) {
     .join("||");
 }
 
+function addPairsToPlate(plate: PackedPlate, pairs: readonly TargetPair[]) {
+  for (const pair of pairs) addTargetPair(plate, pair);
+}
+
+function loadAfterPairs(
+  plate: PackedPlate,
+  pairs: readonly TargetPair[],
+  load: (plate: PackedPlate) => number,
+) {
+  const hypothetical = copyPackedPlate(plate);
+  addPairsToPlate(hypothetical, pairs);
+  return load(hypothetical);
+}
+
+function packAllocationUnits(
+  units: readonly AllocationUnit[],
+  capacity: number,
+  load: (plate: PackedPlate) => number,
+) {
+  const plates: PackedPlate[] = [];
+  for (const unit of units) {
+    let bestIndex = -1;
+    let bestLoad = -1;
+    for (let index = 0; index < plates.length; index += 1) {
+      const nextLoad = loadAfterPairs(plates[index], unit.pairs, load);
+      if (nextLoad <= capacity && nextLoad > bestLoad) {
+        bestIndex = index;
+        bestLoad = nextLoad;
+      }
+    }
+    if (bestIndex < 0) {
+      const plate = emptyPackedPlate();
+      addPairsToPlate(plate, unit.pairs);
+      if (load(plate) > capacity) {
+        throw new PlatePlannerError(
+          "E_INTERNAL_COMPARISON_UNIT_OVERFLOW",
+          "比较组排板单元超出孔板容量。 / A comparison allocation unit exceeds plate capacity.",
+        );
+      }
+      plates.push(plate);
+    } else {
+      addPairsToPlate(plates[bestIndex], unit.pairs);
+    }
+  }
+  return plates;
+}
+
+function comparisonAllocationUnits(
+  samples: string[],
+  sampleDesigns: PlanSampleDesign[],
+  targetGenes: string[],
+  capacity: number,
+  load: (plate: PackedPlate) => number,
+) {
+  const sampleIndex = new Map(
+    samples.map((sample, index) => [sample, index]),
+  );
+  const grouped = new Map<string, PlanSampleDesign[]>();
+  const ungrouped: PlanSampleDesign[] = [];
+  for (const design of sampleDesigns) {
+    if (!design.cellLine || !design.comparisonGroup) {
+      ungrouped.push(design);
+      continue;
+    }
+    const key = comparisonKey(design.cellLine, design.comparisonGroup);
+    const members = grouped.get(key) ?? [];
+    members.push(design);
+    grouped.set(key, members);
+  }
+
+  const units: AllocationUnit[] = [];
+  for (const members of grouped.values()) {
+    const firstSampleOrder = Math.min(
+      ...members.map((member) => sampleIndex.get(member.name) ?? 0),
+    );
+    targetGenes.forEach((gene, geneOrder) => {
+      const fullPairs = members.map((member) => ({
+        sample: member.name,
+        gene,
+      }));
+      if (loadAfterPairs(emptyPackedPlate(), fullPairs, load) <= capacity) {
+        units.push({
+          pairs: fullPairs,
+          sampleOrder: firstSampleOrder,
+          geneOrder,
+          splitOrder: 0,
+        });
+        return;
+      }
+
+      const bridgePairs = members
+        .filter((member) => member.isBridge)
+        .map((member) => ({ sample: member.name, gene }));
+      if (bridgePairs.length === 0) {
+        throw new PlatePlannerError(
+          "E_COMPARISON_UNIT_TOO_LARGE",
+          `比较组“${members[0].cellLine} / ${members[0].comparisonGroup}”检测 ${gene} 时无法装入单块板；请指定桥接样本后显式跨板。 / The comparison unit cannot fit one plate; select a bridge sample to enable an explicit cross-plate design.`,
+        );
+      }
+      if (loadAfterPairs(emptyPackedPlate(), bridgePairs, load) > capacity) {
+        throw new PlatePlannerError(
+          "E_BRIDGE_OVERHEAD_TOO_LARGE",
+          `比较组“${members[0].cellLine} / ${members[0].comparisonGroup}”选择的桥接样本已超过单板容量。 / The selected bridge samples exceed single-plate capacity.`,
+        );
+      }
+
+      const nonBridge = members.filter((member) => !member.isBridge);
+      let currentPairs = [...bridgePairs];
+      let splitOrder = 0;
+      for (const member of nonBridge) {
+        const nextPairs = [
+          ...currentPairs,
+          { sample: member.name, gene },
+        ];
+        if (loadAfterPairs(emptyPackedPlate(), nextPairs, load) <= capacity) {
+          currentPairs = nextPairs;
+          continue;
+        }
+        if (currentPairs.length === bridgePairs.length) {
+          throw new PlatePlannerError(
+            "E_BRIDGE_OVERHEAD_TOO_LARGE",
+            `桥接样本与任一其他样本无法共同装入单板。 / Bridge overhead leaves no capacity for another sample.`,
+          );
+        }
+        units.push({
+          pairs: currentPairs,
+          sampleOrder: firstSampleOrder,
+          geneOrder,
+          splitOrder,
+        });
+        splitOrder += 1;
+        currentPairs = [
+          ...bridgePairs,
+          { sample: member.name, gene },
+        ];
+      }
+      if (currentPairs.length > bridgePairs.length || nonBridge.length === 0) {
+        units.push({
+          pairs: currentPairs,
+          sampleOrder: firstSampleOrder,
+          geneOrder,
+          splitOrder,
+        });
+      }
+    });
+  }
+
+  for (const design of ungrouped) {
+    targetGenes.forEach((gene, geneOrder) => {
+      units.push({
+        pairs: [{ sample: design.name, gene }],
+        sampleOrder: sampleIndex.get(design.name) ?? 0,
+        geneOrder,
+        splitOrder: 0,
+      });
+    });
+  }
+  return units;
+}
+
+function generateComparisonPackings(
+  samples: string[],
+  sampleDesigns: PlanSampleDesign[],
+  targetGenes: string[],
+  capacity: number,
+  load: (plate: PackedPlate) => number,
+) {
+  const units = comparisonAllocationUnits(
+    samples,
+    sampleDesigns,
+    targetGenes,
+    capacity,
+    load,
+  );
+  const orders = [
+    units.slice().sort(
+      (left, right) =>
+        left.sampleOrder - right.sampleOrder ||
+        left.geneOrder - right.geneOrder ||
+        left.splitOrder - right.splitOrder,
+    ),
+    units.slice().sort(
+      (left, right) =>
+        left.geneOrder - right.geneOrder ||
+        left.sampleOrder - right.sampleOrder ||
+        left.splitOrder - right.splitOrder,
+    ),
+    units.slice().sort((left, right) => {
+      const leftLoad = loadAfterPairs(emptyPackedPlate(), left.pairs, load);
+      const rightLoad = loadAfterPairs(emptyPackedPlate(), right.pairs, load);
+      return (
+        rightLoad - leftLoad ||
+        left.geneOrder - right.geneOrder ||
+        left.sampleOrder - right.sampleOrder
+      );
+    }),
+  ];
+  const seen = new Set<string>();
+  return orders
+    .map((order) => packAllocationUnits(order, capacity, load))
+    .filter((plates) => {
+      const signature = packingSignature(plates);
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
+}
+
 function generatePackings(
   samples: string[],
   targetGenes: string[],
@@ -1207,6 +1507,8 @@ function materializePlate(
   strategy: LayoutStrategy,
   loadingPattern: LoadingPattern,
   fillDirection: LayoutFillDirection,
+  sampleDesigns: PlanSampleDesign[],
+  repeatingBridgeSamples: ReadonlySet<string>,
 ): PlannerPlate {
   const wells = emptyWells(rows, columns);
   const wellIndex = new Map(wells.map((well, index) => [well.wellId, index]));
@@ -1214,6 +1516,9 @@ function materializePlate(
   const blocksPerRow = Math.floor(columns / replicates);
   const sampleIndices = new Map(
     inputSamples.map((sample, index) => [sample, index]),
+  );
+  const sampleDesignByName = new Map(
+    sampleDesigns.map((design) => [design.name, design]),
   );
   const alignEachGene =
     strategy === "gene-major" &&
@@ -1288,6 +1593,10 @@ function materializePlate(
           "排板计算发生越界，请检查输入。 / Plate calculation exceeded the available grid; check the inputs.",
         );
       }
+      const design = sampleDesignByName.get(block.sample);
+      const isRepeatedBridge = Boolean(
+        design?.isBridge && repeatingBridgeSamples.has(block.sample),
+      );
       wells[index] = {
         wellId,
         row,
@@ -1297,6 +1606,17 @@ function materializePlate(
         geneType: block.geneType,
         replicateIndex: replicateIndex + 1,
         source: "auto",
+        ...(design?.cellLine ? { cellLine: design.cellLine } : {}),
+        ...(design?.comparisonGroup
+          ? { comparisonGroup: design.comparisonGroup }
+          : {}),
+        ...(design?.isBridge ? { isBridge: true } : {}),
+        ...(isRepeatedBridge
+          ? {
+              crossPlateReason:
+                "比较组超出单板容量，作为跨板桥接重复 / Repeated bridge for an oversized comparison unit",
+            }
+          : {}),
       };
     }
   });
@@ -1334,27 +1654,55 @@ export function planPlateLayout(
     input.plateType === 384 &&
     loadingPattern === "interleaved-8-channel" &&
     fillDirection === "vertical";
+  const hasComparisonGroups = input.sampleDesigns.some(
+    (sample) => sample.cellLine && sample.comparisonGroup,
+  );
+  const standardLoad = (plate: PackedPlate) =>
+    packedLoad(plate, input.referenceGenes.length);
   const standardPackings = strategies.some(
     (strategy) => strategy !== "gene-major" || !usesInterleavedGeneBands,
   )
-    ? generatePackings(
-        input.samples,
-        input.targetGenes,
-        input.blockCapacity,
-        input.referenceGenes.length,
-      )
+    ? hasComparisonGroups
+      ? generateComparisonPackings(
+          input.samples,
+          input.sampleDesigns,
+          input.targetGenes,
+          input.blockCapacity,
+          standardLoad,
+        )
+      : generatePackings(
+          input.samples,
+          input.targetGenes,
+          input.blockCapacity,
+          input.referenceGenes.length,
+        )
     : [];
+  const geneBandLoadForInput = (plate: PackedPlate) =>
+    geneBandLoad(
+      plate,
+      input.referenceGenes.length,
+      input.dimensions.rows,
+      sampleIndices,
+    );
   const geneBandPackings =
     usesInterleavedGeneBands &&
     strategies.includes("gene-major") &&
     input.referenceGenes.length + 1 <= input.blocksPerRow
-      ? generateGeneBandPackings(
-          input.samples,
-          input.targetGenes,
-          input.blocksPerRow,
-          input.referenceGenes.length,
-          input.dimensions.rows,
-        )
+      ? hasComparisonGroups
+        ? generateComparisonPackings(
+            input.samples,
+            input.sampleDesigns,
+            input.targetGenes,
+            input.blocksPerRow,
+            geneBandLoadForInput,
+          )
+        : generateGeneBandPackings(
+            input.samples,
+            input.targetGenes,
+            input.blocksPerRow,
+            input.referenceGenes.length,
+            input.dimensions.rows,
+          )
       : [];
   const candidates = strategies.flatMap((strategy) => {
     const packings =
@@ -1395,6 +1743,29 @@ export function planPlateLayout(
   );
   const best = candidates[0];
 
+  const targetPlateCounts = new Map<string, number>();
+  for (const plate of best.packedPlates) {
+    for (const [sample, targets] of plate.samples) {
+      for (const gene of targets) {
+        const key = groupKey(sample, gene);
+        targetPlateCounts.set(key, (targetPlateCounts.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  const bridgeNames = new Set(
+    input.sampleDesigns
+      .filter((design) => design.isBridge)
+      .map((design) => design.name),
+  );
+  const repeatingBridgeSamples = new Set(
+    Array.from(targetPlateCounts.entries())
+      .filter(([key, count]) => {
+        const [sample] = key.split("\u0000");
+        return count > 1 && bridgeNames.has(sample);
+      })
+      .map(([key]) => key.split("\u0000")[0]),
+  );
+
   const plates = best.plateSequences.map((sequence, index) =>
     materializePlate(
       sequence,
@@ -1407,11 +1778,14 @@ export function planPlateLayout(
       best.strategy,
       loadingPattern,
       fillDirection,
+      input.sampleDesigns,
+      repeatingBridgeSamples,
     ),
   );
-  const usedBlocks =
-    input.samples.length * input.targetGenes.length +
-    best.samplePlateAppearances * input.referenceGenes.length;
+  const usedBlocks = best.plateSequences.reduce(
+    (sum, sequence) => sum + sequence.length,
+    0,
+  );
   const usedWells = usedBlocks * input.replicates;
   const totalWells =
     plates.length * input.dimensions.rows * input.dimensions.columns;
@@ -1456,9 +1830,11 @@ export function planPlateLayout(
         best.repeatedReferenceBlocks * input.replicates,
       genePlateOccurrences: best.genePlateOccurrences,
     },
-    reason: options.strategy
-      ? `已按用户选择生成${strategyName}布局；孔板分配仍优先减少板数与跨板内参重做。${repeatExplanation} / The selected ${strategyName} layout was generated while plate allocation continued to minimize plate count and reference reruns.`
-      : `系统在已生成的可行候选中，依次比较板数、跨板内参重做、引物跨板批次和板内切换。推荐${strategyName}：${repeatExplanation} / Feasible candidates are ranked by plate count, reference reruns, assay batches, and within-plate switches.`,
+    reason: hasComparisonGroups
+      ? `已先执行比较单元同板约束，再在可行方案中优化板数与操作切换；超大单元仅使用指定桥接样本拆分。推荐${strategyName}：${repeatExplanation} / Comparison-unit integrity is enforced before optimizing plate count and handling switches; oversized units split only with designated bridge samples.`
+      : options.strategy
+        ? `已按用户选择生成${strategyName}布局；孔板分配仍优先减少板数与跨板内参重做。${repeatExplanation} / The selected ${strategyName} layout was generated while plate allocation continued to minimize plate count and reference reruns.`
+        : `系统在已生成的可行候选中，依次比较板数、跨板内参重做、引物跨板批次和板内切换。推荐${strategyName}：${repeatExplanation} / Feasible candidates are ranked by plate count, reference reruns, assay batches, and within-plate switches.`,
   };
 }
 
@@ -1476,6 +1852,31 @@ export function refreshPlanDerivedData(
   let primerSwitches = 0;
   let genePlateOccurrences = 0;
   let manualWells = 0;
+  const designByName = new Map(
+    input.sampleDesigns.map((design) => [design.name, design]),
+  );
+  const bridgeTargetPlates = new Map<string, Set<number>>();
+  for (const plate of result.plates) {
+    for (const well of plate.wells) {
+      if (
+        !well.sample ||
+        !well.gene ||
+        well.geneType !== "target" ||
+        !designByName.get(well.sample)?.isBridge
+      ) {
+        continue;
+      }
+      const key = groupKey(well.sample, well.gene);
+      const plateNumbers = bridgeTargetPlates.get(key) ?? new Set<number>();
+      plateNumbers.add(plate.plateNumber);
+      bridgeTargetPlates.set(key, plateNumbers);
+    }
+  }
+  const repeatingBridgeSamples = new Set(
+    Array.from(bridgeTargetPlates.entries())
+      .filter(([, plates]) => plates.size > 1)
+      .map(([key]) => key.split("\u0000")[0]),
+  );
 
   const plates = result.plates.map((plate) => {
     const occupied = plate.wells
@@ -1524,12 +1925,36 @@ export function refreshPlanDerivedData(
     const assignedSamples = new Set(
       occupied.flatMap((well) => (well.sample ? [well.sample] : [])),
     );
+    const decoratedWells = plate.wells.map((well) => {
+      const baseWell = { ...well };
+      delete baseWell.cellLine;
+      delete baseWell.comparisonGroup;
+      delete baseWell.isBridge;
+      delete baseWell.crossPlateReason;
+      if (!well.sample || !well.gene) return baseWell;
+      const design = designByName.get(well.sample);
+      return {
+        ...baseWell,
+        ...(design?.cellLine ? { cellLine: design.cellLine } : {}),
+        ...(design?.comparisonGroup
+          ? { comparisonGroup: design.comparisonGroup }
+          : {}),
+        ...(design?.isBridge ? { isBridge: true } : {}),
+        ...(design?.isBridge && repeatingBridgeSamples.has(well.sample)
+          ? {
+              crossPlateReason:
+                "比较组超出单板容量，作为跨板桥接重复 / Repeated bridge for an oversized comparison unit",
+            }
+          : {}),
+      };
+    });
     return {
       ...plate,
       name: plate.name?.trim() || defaultPlateName(plate.plateNumber),
       sampleNames: input.samples.filter((sample) =>
         assignedSamples.has(sample),
       ),
+      wells: decoratedWells,
     };
   });
 
@@ -1635,6 +2060,47 @@ export function validateLayout(
   const knownSamples = new Set(input.samples);
   const targetSet = new Set(input.targetGenes);
   const referenceSet = new Set(input.referenceGenes);
+  const comparisonGroups = new Map<string, PlanSampleDesign[]>();
+  for (const design of input.sampleDesigns) {
+    if (!design.cellLine || !design.comparisonGroup) continue;
+    const key = comparisonKey(design.cellLine, design.comparisonGroup);
+    const members = comparisonGroups.get(key) ?? [];
+    members.push(design);
+    comparisonGroups.set(key, members);
+  }
+  const sampleIndices = new Map(
+    input.samples.map((sample, index) => [sample, index]),
+  );
+  const comparisonUnitFits = (
+    members: PlanSampleDesign[],
+    gene: string,
+  ) => {
+    const plate = emptyPackedPlate();
+    addPairsToPlate(
+      plate,
+      members.map((member) => ({ sample: member.name, gene })),
+    );
+    return result.plates[0]?.rows === 16 &&
+      result.loadingPattern === "interleaved-8-channel" &&
+      result.strategy === "gene-major" &&
+      result.fillDirection === "vertical"
+      ? geneBandLoad(
+          plate,
+          input.referenceGenes.length,
+          input.dimensions.rows,
+          sampleIndices,
+        ) <= input.blocksPerRow
+      : packedLoad(plate, input.referenceGenes.length) <= input.blockCapacity;
+  };
+  const allowedBridgeRepeats = new Set<string>();
+  for (const members of comparisonGroups.values()) {
+    for (const gene of input.targetGenes) {
+      if (comparisonUnitFits(members, gene)) continue;
+      for (const bridge of members.filter((member) => member.isBridge)) {
+        allowedBridgeRepeats.add(groupKey(bridge.name, gene));
+      }
+    }
+  }
 
   result.plates.forEach((plate) => {
     const plateGroups = new Map<string, PlannerWell[]>();
@@ -1755,7 +2221,21 @@ export function validateLayout(
     for (const gene of input.targetGenes) {
       const assignments =
         globalTargetGroups.get(groupKey(sample, gene)) ?? [];
-      if (assignments.length !== input.replicates) {
+      const assignmentCounts = new Map<number, number>();
+      assignments.forEach((assignment) =>
+        assignmentCounts.set(
+          assignment.plateNumber,
+          (assignmentCounts.get(assignment.plateNumber) ?? 0) + 1,
+        ),
+      );
+      const validBridgeRepeat =
+        allowedBridgeRepeats.has(groupKey(sample, gene)) &&
+        assignments.length >= input.replicates &&
+        assignments.length % input.replicates === 0 &&
+        Array.from(assignmentCounts.values()).every(
+          (count) => count === input.replicates,
+        );
+      if (assignments.length !== input.replicates && !validBridgeRepeat) {
         const affectedPlateNumbers = Array.from(
           new Set(assignments.map((assignment) => assignment.plateNumber)),
         );
@@ -1785,6 +2265,49 @@ export function validateLayout(
                 ? `缺少 ${sample} × ${gene} 的目的基因检测孔。 / Required target wells are missing.`
                 : `${sample} × ${gene} 共出现 ${assignments.length} 孔，应为 ${input.replicates} 孔。 / Found ${assignments.length} wells; expected ${input.replicates}.`,
           });
+        }
+      }
+    }
+  }
+
+  for (const members of comparisonGroups.values()) {
+    for (const gene of input.targetGenes) {
+      const assignmentsBySample = new Map(
+        members.map((member) => [
+          member.name,
+          globalTargetGroups.get(groupKey(member.name, gene)) ?? [],
+        ]),
+      );
+      const involvedPlates = new Set(
+        Array.from(assignmentsBySample.values()).flatMap((assignments) =>
+          assignments.map((assignment) => assignment.plateNumber),
+        ),
+      );
+      if (involvedPlates.size <= 1) continue;
+      if (comparisonUnitFits(members, gene)) {
+        errors.push({
+          code: "E_COMPARISON_UNIT_SPLIT",
+          severity: "high",
+          message: `比较组“${members[0].cellLine} / ${members[0].comparisonGroup}”检测 ${gene} 时被拆到 ${Array.from(involvedPlates).join(", ")} 号板；自动布局应保持同板，手动拆分可能引入板间效应。 / The comparison unit is split across plates; manual splitting may introduce a plate effect.`,
+        });
+        continue;
+      }
+      const bridges = members.filter((member) => member.isBridge);
+      for (const plateNumber of involvedPlates) {
+        for (const bridge of bridges) {
+          const count = (
+            assignmentsBySample.get(bridge.name) ?? []
+          ).filter(
+            (assignment) => assignment.plateNumber === plateNumber,
+          ).length;
+          if (count !== input.replicates) {
+            errors.push({
+              code: "E_BRIDGE_SAMPLE_MISSING",
+              severity: "high",
+              plateNumber,
+              message: `Plate ${String(plateNumber).padStart(2, "0")}：跨板比较组缺少桥接样本 ${bridge.name} × ${gene} 的完整复孔。 / The split comparison group is missing its complete bridge replicate block.`,
+            });
+          }
         }
       }
     }
