@@ -37,7 +37,7 @@ test("server-renders the qPCR plate planner shell", async () => {
   assert.match(html, /96 \/ 384 孔 · 排板与反应用量/);
   assert.match(html, /选择孔板/);
   assert.match(html, /样本与对照/);
-  assert.match(html, /逐行设置名称及样本类型/);
+  assert.match(html, /逐行设置名称与类型；细胞系和比较组可选/);
   assert.match(html, /添加一行/);
   assert.match(html, /添加检测基因/);
   assert.match(html, /逐行设置名称及目的\/内参类型/);
@@ -103,4 +103,19 @@ test("keeps long plate sample lists collapsed behind a compact summary", async (
   assert.match(source, /activePlate\.sampleNames\.length} 个样本/);
   assert.match(source, /className="plate-sample-details"/);
   assert.match(source, /查看样本/);
+});
+
+test("declares comparison metadata, bulk assignment, bridge, and actionable advisory controls", async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../app/QpcrPlanner.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /样本名 \+ 细胞系 \+ 比较组（3 列）/);
+  assert.match(source, /className="sample-bulk-metadata"/);
+  assert.match(source, /设置比较组/);
+  assert.match(source, /className="bridge-marker"/);
+  assert.match(source, /beginEntryTextEdit/);
+  assert.match(source, /finishEntryTextEdit/);
+  assert.match(styles, /\.sample-metadata-row/);
+  assert.match(styles, /\.sample-select-toggle/);
 });
