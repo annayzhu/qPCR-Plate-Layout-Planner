@@ -23,6 +23,18 @@ export interface ExportableWell {
   geneType: GeneType | null;
   replicateIndex: number | null;
   source: LayoutSource;
+  cellLine?: string;
+  comparisonGroup?: string;
+  isBridge?: boolean;
+  crossPlateReason?: string;
+}
+
+export interface ExportSampleDesign {
+  name: string;
+  kind?: "sample" | "blank";
+  cellLine?: string;
+  comparisonGroup?: string;
+  isBridge?: boolean;
 }
 
 export interface ExportablePlate {
@@ -54,6 +66,8 @@ export interface ExportContext {
   reactionSystem: ReactionSystemInput;
   /** Samples marked as Blank use water instead of cDNA template. */
   blankSamples?: string[];
+  /** Optional comparison metadata used by strict group-aware allocation. */
+  sampleDesigns?: ExportSampleDesign[];
 }
 
 const TARGET_FILLS = [
@@ -261,6 +275,12 @@ function appendReactionSheets(
     plate.wells.filter((well) => well.sample && well.gene),
   );
   const blankSampleSet = new Set(context.blankSamples ?? []);
+  const sampleDesignMap = new Map(
+    (context.sampleDesigns ?? []).map((sample) => [
+      sample.name.trim().toLocaleLowerCase(),
+      sample,
+    ]),
+  );
   const blankWells = occupied.filter(
     (well) => well.sample && blankSampleSet.has(well.sample),
   );
@@ -499,6 +519,7 @@ function appendReactionSheets(
   const sampleRows = Array.from(sampleCounts.entries()).map(
     ([sample, wellCount]) => {
       const isBlank = blankSampleSet.has(sample);
+      const design = sampleDesignMap.get(sample.trim().toLocaleLowerCase());
       const theoretical = isBlank
         ? 0
         : wellCount * context.reactionSystem.cdnaPerWellUl;
@@ -511,6 +532,9 @@ function appendReactionSheets(
         "样本类型 / Sample type": isBlank
           ? "空白 / Blank"
           : "样本 / Sample",
+        "细胞系 / Cell line": design?.cellLine ?? "",
+        "比较组 / Comparison group": design?.comparisonGroup ?? "",
+        "桥接样本 / Bridge sample": design?.isBridge ? "是 / Yes" : "否 / No",
         "孔数 / Well count": wellCount,
         "理论 cDNA / Required cDNA (µL)": roundedVolume(theoretical),
         "建议准备 cDNA / Prepare cDNA (µL)": roundedVolume(
@@ -528,6 +552,9 @@ function appendReactionSheets(
     { wch: 24 },
     { wch: 28 },
     { wch: 20 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 18 },
     { wch: 14 },
     { wch: 24 },
     { wch: 22 },
@@ -641,6 +668,31 @@ export async function buildPlateWorkbook(
     new Set(
       occupiedWells.flatMap((well) =>
         well.geneType === "reference" && well.gene ? [well.gene] : [],
+      ),
+    ),
+  );
+  const sampleNameSet = new Set(
+    samplesOnPlate.map((sample) => sample.trim().toLocaleLowerCase()),
+  );
+  const sampleDesignsOnPlate = (context.sampleDesigns ?? []).filter((sample) =>
+    sampleNameSet.has(sample.name.trim().toLocaleLowerCase()),
+  );
+  const comparisonGroupsOnPlate = Array.from(
+    new Set(
+      sampleDesignsOnPlate.flatMap((sample) =>
+        sample.cellLine?.trim() && sample.comparisonGroup?.trim()
+          ? [`${sample.cellLine.trim()} / ${sample.comparisonGroup.trim()}`]
+          : [],
+      ),
+    ),
+  );
+  const bridgeSamplesOnPlate = sampleDesignsOnPlate
+    .filter((sample) => sample.isBridge)
+    .map((sample) => sample.name);
+  const crossPlateReasons = Array.from(
+    new Set(
+      occupiedWells.flatMap((well) =>
+        well.crossPlateReason ? [well.crossPlateReason] : [],
       ),
     ),
   );
@@ -797,6 +849,13 @@ export async function buildPlateWorkbook(
     .sort((a, b) => a.row - b.row || a.column - b.column)
     .map((well) => {
       const loadingMetadata = wellLoadingMetadata(well, context);
+      const sampleDesign = well.sample
+        ? context.sampleDesigns?.find(
+            (sample) =>
+              sample.name.trim().toLocaleLowerCase() ===
+              well.sample?.trim().toLocaleLowerCase(),
+          )
+        : undefined;
       return {
         "孔板名称 / Plate name": plateName(plate),
         "孔板编号 / Plate number": plate.plateNumber,
@@ -804,6 +863,12 @@ export async function buildPlateWorkbook(
         "行 / Row": rowLabel(well.row),
         "列 / Column": well.column + 1,
         "样本 / Sample": well.sample ?? "",
+        "细胞系 / Cell line": well.cellLine ?? sampleDesign?.cellLine ?? "",
+        "比较组 / Comparison group":
+          well.comparisonGroup ?? sampleDesign?.comparisonGroup ?? "",
+        "桥接样本 / Bridge sample":
+          (well.isBridge ?? sampleDesign?.isBridge) ? "是 / Yes" : "否 / No",
+        "跨板原因 / Cross-plate reason": well.crossPlateReason ?? "",
         "基因 / Assay": well.gene ?? "",
         "类型 / Assay type":
           well.geneType === "reference"
@@ -823,7 +888,7 @@ export async function buildPlateWorkbook(
     });
   const detailSheet = XLSX.utils.json_to_sheet(detailRows);
   detailSheet["!autofilter"] = {
-    ref: `A1:N${Math.max(2, detailRows.length + 1)}`,
+    ref: `A1:R${Math.max(2, detailRows.length + 1)}`,
   };
   detailSheet["!cols"] = [
     { wch: 24 },
@@ -832,6 +897,10 @@ export async function buildPlateWorkbook(
     { wch: 7 },
     { wch: 9 },
     { wch: 24 },
+    { wch: 20 },
+    { wch: 22 },
+    { wch: 18 },
+    { wch: 34 },
     { wch: 18 },
     { wch: 14 },
     { wch: 16 },
@@ -901,6 +970,24 @@ export async function buildPlateWorkbook(
     ],
     ["本板样本数 / Samples on plate", samplesOnPlate.length],
     ["本板样本 / Sample names on plate", samplesOnPlate.join(", ")],
+    [
+      "本板比较单元 / Comparison units on plate",
+      comparisonGroupsOnPlate.length > 0
+        ? comparisonGroupsOnPlate.join(", ")
+        : "未设置 / Not configured",
+    ],
+    [
+      "本板桥接样本 / Bridge samples on plate",
+      bridgeSamplesOnPlate.length > 0
+        ? bridgeSamplesOnPlate.join(", ")
+        : "无 / None",
+    ],
+    [
+      "跨板原因 / Cross-plate reason",
+      crossPlateReasons.length > 0
+        ? crossPlateReasons.join("; ")
+        : "无 / None",
+    ],
     ["本板目的基因 / Targets on plate", targetsOnPlate.join(", ")],
     [
       "本板内参基因 / References on plate",
@@ -926,7 +1013,11 @@ export async function buildPlateWorkbook(
     ],
     [
       "跨板规则 / Cross-plate rule",
-      "样本的目的基因可跨板；任何含该样本目的基因的板，都必须重新安排该样本全部内参。 / Targets may span plates; every plate containing that sample's targets must include all references for that sample.",
+      (context.sampleDesigns ?? []).some(
+        (sample) => sample.cellLine && sample.comparisonGroup,
+      )
+        ? "比较单元（细胞系 × 比较组 × 单个目的基因）在可容纳时不可跨板；超大单元仅在指定桥接样本后拆分，且桥接样本在每块板重复目的基因及全部内参。 / A comparison unit (cell line × comparison group × one target) stays on one plate whenever feasible; oversized units split only with designated bridge samples, which repeat the target and all references on every plate."
+        : "未设置比较组时沿用样本级规则：目的基因可跨板，但任何含该样本目的基因的板都必须重新安排该样本全部内参。 / Without comparison groups, legacy sample-level allocation applies: targets may span plates, but every plate containing a sample target must include all references for that sample.",
     ],
     [
       "确认状态 / Confirmation",

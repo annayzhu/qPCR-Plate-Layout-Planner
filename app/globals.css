@@ -645,6 +645,77 @@ select:focus-visible,
   grid-template-columns: 28px minmax(0, 1fr) minmax(96px, 0.58fr) 40px;
 }
 
+.sample-entry-row {
+  padding-block: 2px 7px;
+}
+
+.sample-metadata-row {
+  display: grid;
+  grid-column: 2 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 6px;
+}
+
+.sample-metadata-input,
+.bridge-toggle {
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-raised);
+  color: var(--ink-secondary);
+  font-size: 10px;
+}
+
+.sample-metadata-input {
+  width: 100%;
+  padding: 6px 9px;
+}
+
+.sample-metadata-input:focus {
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px rgba(23, 107, 117, 0.09);
+  outline: 0;
+}
+
+.sample-metadata-input:disabled,
+.bridge-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.bridge-toggle {
+  padding: 5px 10px;
+  cursor: pointer;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.bridge-toggle.is-active {
+  border-color: #78a79f;
+  background: #deeee9;
+  color: #215f58;
+}
+
+.comparison-advisory {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  padding: 7px 9px;
+  border: 1px solid #eadfbe;
+  border-radius: 9px;
+  background: #fbf7e9;
+  color: #705f2e;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.comparison-advisory svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .sortable-row {
   position: relative;
   border-radius: 11px;
@@ -2322,6 +2393,12 @@ select:focus-visible,
   filter: saturate(0.55);
 }
 
+.well-bridge {
+  box-shadow:
+    0 0 0 2px rgba(33, 95, 88, 0.16),
+    inset 0 1px 1px rgba(255, 255, 255, 0.9);
+}
+
 .well-empty {
   --well-bg: rgba(255, 255, 255, 0.58);
   --well-border: #d8d7d0;
@@ -2360,6 +2437,23 @@ select:focus-visible,
   border: 1px solid rgba(255, 255, 255, 0.9);
   background: var(--manual);
   transform: rotate(45deg);
+}
+
+.bridge-marker {
+  position: absolute;
+  bottom: 1px;
+  left: 2px;
+  display: grid;
+  width: 10px;
+  height: 10px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 50%;
+  background: #34766e;
+  color: white;
+  font-size: 6px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .well-label,
@@ -2772,6 +2866,14 @@ select:focus-visible,
 
   .sample-row {
     grid-template-columns: 28px minmax(0, 1fr) 96px 40px;
+  }
+
+  .sample-metadata-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .bridge-toggle {
+    grid-column: 1 / -1;
   }
 
   .sample-draft-row {

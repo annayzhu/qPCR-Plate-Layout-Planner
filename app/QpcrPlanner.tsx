@@ -184,7 +184,7 @@ function SortableEntryRow({
 
   return (
     <div
-      className={`sample-row sortable-row ${
+      className={`sample-row sortable-row ${entry.kind}-entry-row ${
         isDragging ? "is-dragging" : ""
       } ${isDropTarget ? "is-drop-target" : ""}`}
       onDragOver={(event) => onDragOver(entry, event)}
@@ -263,6 +263,18 @@ function parseExcelNames(value: string) {
     .split(/\t|\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseSamplePaste(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => {
+      const [name = "", cellLine = "", comparisonGroup = ""] = line
+        .split("\t")
+        .map((item) => item.trim());
+      return { name, cellLine, comparisonGroup };
+    })
+    .filter((row) => row.name);
 }
 
 function normalizedKey(value: string) {
@@ -469,8 +481,8 @@ export function QpcrPlanner() {
         .filter(Boolean),
     [samples],
   );
-  const samplePasteNames = useMemo(
-    () => parseExcelNames(samplePaste),
+  const samplePasteRows = useMemo(
+    () => parseSamplePaste(samplePaste),
     [samplePaste],
   );
   const genePasteNames = useMemo(
@@ -547,6 +559,30 @@ export function QpcrPlanner() {
         tr(
           "样本名称不能重复，请修改重复名称",
           "Sample names must be unique; rename duplicates",
+        ),
+      );
+    const invalidGroupedSample = samples.find(
+      (sample) => sample.comparisonGroup?.trim() && !sample.cellLine?.trim(),
+    );
+    if (invalidGroupedSample)
+      issues.push(
+        tr(
+          `样本 ${invalidGroupedSample.name || "当前行"} 设置比较组时必须填写细胞系`,
+          `Sample ${invalidGroupedSample.name || "in the current row"} needs a cell line before it can join a comparison group`,
+        ),
+      );
+    const invalidBlank = samples.find(
+      (sample) =>
+        sample.kind === "blank" &&
+        (sample.cellLine?.trim() ||
+          sample.comparisonGroup?.trim() ||
+          sample.isBridge),
+    );
+    if (invalidBlank)
+      issues.push(
+        tr(
+          `Blank ${invalidBlank.name || "当前行"} 不能设置细胞系、比较组或桥接状态`,
+          `Blank ${invalidBlank.name || "in the current row"} cannot have cell-line, comparison-group, or bridge metadata`,
         ),
       );
     if (genes.some((gene) => !gene.name.trim()))
@@ -627,6 +663,32 @@ export function QpcrPlanner() {
     targetGenes.length,
     tr,
   ]);
+
+  const comparisonAdvisories = useMemo(() => {
+    const counts = new Map<string, number>();
+    const labels = new Map<string, string>();
+    for (const sample of samples) {
+      const cellLine = sample.cellLine?.trim();
+      if (
+        sample.kind === "blank" ||
+        !cellLine ||
+        sample.comparisonGroup?.trim()
+      ) {
+        continue;
+      }
+      const key = normalizedKey(cellLine);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      labels.set(key, cellLine);
+    }
+    return Array.from(counts.entries())
+      .filter(([, count]) => count > 1)
+      .map(([key, count]) =>
+        tr(
+          `${labels.get(key)} 有 ${count} 个未设置比较组的样本；如需直接比较，请建立比较组。`,
+          `${labels.get(key)} has ${count} ungrouped samples; create a comparison group if they will be compared directly.`,
+        ),
+      );
+  }, [samples, tr]);
 
   const audit = useMemo(
     () => plannerSessionAudit(plannerSession),
@@ -919,6 +981,55 @@ export function QpcrPlanner() {
         ),
       });
     }
+    return additions.length;
+  }
+
+  function addSampleRows(
+    rows: Array<{
+      name: string;
+      cellLine?: string;
+      comparisonGroup?: string;
+    }>,
+  ) {
+    const existing = new Set(
+      samples.map((sample) => normalizedKey(sample.name)),
+    );
+    const additions: SampleEntry[] = [];
+    const duplicates: string[] = [];
+    for (const row of rows) {
+      const name = row.name.trim();
+      if (!name) continue;
+      const key = normalizedKey(name);
+      if (existing.has(key)) {
+        duplicates.push(name);
+        continue;
+      }
+      existing.add(key);
+      additions.push({
+        id: makeId("sample"),
+        name,
+        kind: "sample",
+        cellLine: row.cellLine?.trim() ?? "",
+        comparisonGroup: row.comparisonGroup?.trim() ?? "",
+        isBridge: false,
+      });
+    }
+    if (additions.length > 0) {
+      commitEntrySnapshot({ samples: [...samples, ...additions], genes });
+    }
+    setToast({
+      tone: duplicates.length > 0 ? "error" : "success",
+      message:
+        duplicates.length > 0
+          ? tr(
+              `已导入 ${additions.length} 个样本，并跳过 ${duplicates.length} 个重复名称。`,
+              `Imported ${additions.length} sample(s) and skipped ${duplicates.length} duplicate name(s).`,
+            )
+          : tr(
+              `已导入 ${additions.length} 个样本。`,
+              `Imported ${additions.length} sample(s).`,
+            ),
+    });
     return additions.length;
   }
 
@@ -1719,6 +1830,15 @@ export function QpcrPlanner() {
       plateType,
       replicates,
       samples: sampleNames,
+      sampleDesigns: samples
+        .filter((sample) => sample.name.trim())
+        .map((sample) => ({
+          name: sample.name.trim(),
+          kind: sample.kind,
+          cellLine: sample.cellLine?.trim() || undefined,
+          comparisonGroup: sample.comparisonGroup?.trim() || undefined,
+          isBridge: Boolean(sample.isBridge),
+        })),
       blankSamples: blankSampleNames,
       targetGenes,
       referenceGenes,
@@ -2081,8 +2201,8 @@ export function QpcrPlanner() {
                   </h2>
                   <p className="panel-description">
                     {tr(
-                      "逐行设置名称及样本类型",
-                      "Set a name and type for each row",
+                      "逐行设置名称与类型；细胞系和比较组可选",
+                      "Set name and type; cell line and comparison group are optional",
                     )}
                   </p>
                 </div>
@@ -2110,25 +2230,25 @@ export function QpcrPlanner() {
                   value={samplePaste}
                   onChange={(event) => setSamplePaste(event.target.value)}
                   placeholder={tr(
-                    "从 Excel 粘贴样本名称，每行一个…",
-                    "Paste sample names from Excel, one per line…",
+                    "从 Excel 粘贴：样本名，或样本名 + 细胞系 + 比较组（3 列）…",
+                    "Paste from Excel: sample name, or name + cell line + comparison group (3 columns)…",
                   )}
                   aria-label={tr("批量粘贴样本", "Paste samples in bulk")}
                 />
                 <button
                   className="button button-soft sample-import-button"
                   type="button"
-                  disabled={samplePasteNames.length === 0}
+                  disabled={samplePasteRows.length === 0}
                   onClick={() => {
-                    addSamples(samplePasteNames);
+                    addSampleRows(samplePasteRows);
                     setSamplePaste("");
                   }}
                 >
                   <Plus size={15} />
                   {tr(
-                    `导入 ${samplePasteNames.length} 个样本名称`,
-                    `Import ${samplePasteNames.length} sample ${
-                      samplePasteNames.length === 1 ? "name" : "names"
+                    `导入 ${samplePasteRows.length} 个样本名称`,
+                    `Import ${samplePasteRows.length} sample ${
+                      samplePasteRows.length === 1 ? "name" : "names"
                     }`,
                   )}
                 </button>
@@ -2167,8 +2287,8 @@ export function QpcrPlanner() {
                   <p className="entry-order-help">
                     <GripVertical size={12} />
                     {tr(
-                      "拖动排序，点按手柄可上移/下移；⌘/Ctrl+Z 撤销",
-                      "Drag to reorder, or tap the handle for move controls; ⌘/Ctrl+Z to undo",
+                      "拖动排序；第二行依次为细胞系、比较组、桥接；⌘/Ctrl+Z 撤销",
+                      "Drag to reorder; row 2 is cell line, comparison group, bridge; ⌘/Ctrl+Z to undo",
                     )}
                   </p>
                   {samples.map((sample, index) => (
@@ -2244,6 +2364,13 @@ export function QpcrPlanner() {
                                       item.kind === "sample"
                                         ? "blank"
                                         : "sample",
+                                    ...(item.kind === "sample"
+                                      ? {
+                                          cellLine: "",
+                                          comparisonGroup: "",
+                                          isBridge: false,
+                                        }
+                                      : {}),
                                   }
                                 : item,
                             ),
@@ -2282,7 +2409,83 @@ export function QpcrPlanner() {
                       >
                         <Trash2 size={15} />
                       </button>
+                      <div className="sample-metadata-row">
+                        <input
+                          className="sample-metadata-input"
+                          value={sample.cellLine ?? ""}
+                          disabled={sample.kind === "blank"}
+                          onChange={(event) => {
+                            const cellLine = event.target.value;
+                            setSamples((current) =>
+                              current.map((item) =>
+                                item.id === sample.id
+                                  ? { ...item, cellLine }
+                                  : item,
+                              ),
+                            );
+                            markChanged();
+                          }}
+                          placeholder={tr("细胞系（可选）", "Cell line (optional)")}
+                          aria-label={tr(
+                            `${sample.name || "当前样本"}的细胞系`,
+                            `Cell line for ${sample.name || "this sample"}`,
+                          )}
+                        />
+                        <input
+                          className="sample-metadata-input"
+                          value={sample.comparisonGroup ?? ""}
+                          disabled={sample.kind === "blank"}
+                          onChange={(event) => {
+                            const comparisonGroup = event.target.value;
+                            setSamples((current) =>
+                              current.map((item) =>
+                                item.id === sample.id
+                                  ? { ...item, comparisonGroup }
+                                  : item,
+                              ),
+                            );
+                            markChanged();
+                          }}
+                          placeholder={tr("比较组（可选）", "Comparison group (optional)")}
+                          aria-label={tr(
+                            `${sample.name || "当前样本"}的比较组`,
+                            `Comparison group for ${sample.name || "this sample"}`,
+                          )}
+                        />
+                        <button
+                          className={`bridge-toggle ${sample.isBridge ? "is-active" : ""}`}
+                          type="button"
+                          disabled={
+                            sample.kind === "blank" ||
+                            !sample.cellLine?.trim() ||
+                            !sample.comparisonGroup?.trim()
+                          }
+                          onClick={() => {
+                            commitEntrySnapshot({
+                              samples: samples.map((item) =>
+                                item.id === sample.id
+                                  ? { ...item, isBridge: !item.isBridge }
+                                  : item,
+                              ),
+                              genes,
+                            });
+                          }}
+                          aria-pressed={Boolean(sample.isBridge)}
+                          title={tr(
+                            "超大比较单元跨板时，桥接样本会在每块板重复检测目的基因及全部内参",
+                            "When an oversized comparison unit spans plates, a bridge sample repeats the target and all references on every plate",
+                          )}
+                        >
+                          {tr("桥接", "Bridge")}
+                        </button>
+                      </div>
                     </SortableEntryRow>
+                  ))}
+                  {comparisonAdvisories.map((message) => (
+                    <p className="comparison-advisory" key={message}>
+                      <Info size={12} />
+                      {message}
+                    </p>
                   ))}
                 </div>
               )}
@@ -3770,6 +3973,7 @@ export function QpcrPlanner() {
                             .map((well) => {
                               const empty = !well.sample || !well.gene;
                               const manual = well.source === "manual";
+                              const bridge = Boolean(well.isBridge);
                               const selected = selectedWellIds.includes(
                                 well.wellId,
                               );
@@ -3783,6 +3987,7 @@ export function QpcrPlanner() {
                                   : "",
                                 empty ? "well-empty" : "",
                                 blank ? "well-blank" : "",
+                                bridge ? "well-bridge" : "",
                                 manual ? "well-manual" : "",
                                 selected ? "well-selected" : "",
                               ]
@@ -3806,7 +4011,7 @@ export function QpcrPlanner() {
                                         : "目的基因"
                                     }，复孔 ${well.replicateIndex ?? "—"}${
                                       manual ? "，手动修改" : ""
-                                    }`,
+                                    }${bridge ? "，桥接样本" : ""}`,
                                     `${well.wellId}, ${
                                       blank ? "Blank" : "sample"
                                     } ${well.sample}, assay ${well.gene}, ${
@@ -3815,7 +4020,7 @@ export function QpcrPlanner() {
                                         : "target"
                                     }, replicate ${well.replicateIndex ?? "—"}${
                                       manual ? ", manually edited" : ""
-                                    }`,
+                                    }${bridge ? ", bridge sample" : ""}`,
                                   );
                               return (
                                 <button
@@ -3865,6 +4070,14 @@ export function QpcrPlanner() {
                                       className="manual-marker"
                                       aria-hidden="true"
                                     />
+                                  )}
+                                  {bridge && !empty && (
+                                    <span
+                                      className="bridge-marker"
+                                      aria-hidden="true"
+                                    >
+                                      B
+                                    </span>
                                   )}
                                   {!empty && (
                                     <span>

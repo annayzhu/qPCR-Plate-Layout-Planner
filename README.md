@@ -13,9 +13,10 @@
   孔板预览和 Excel 始终保留真实的 A–P 物理行序。
 - 384 孔隔行模式可将同一基因的反应混合液分装到 A–H 八连排；
   每管按对应通道在两次上样中的实际孔数计算，Blank 替代水另行加入。
-- 目的基因可以跨板；任何包含某样本目的基因的板，都必须同时包含该样本的全部内参。
-- 优化候选依次比较：孔板数、跨板内参重做、基因跨板批次、板内引物切换和样本切换。
-- 手动编辑支持单孔、Shift 连选和 Ctrl/⌘ 不连续多选；修改孔以独立颜色和边框标记，并重新执行全局校验，但提醒不限制保存或导出。
+- 可为样本设置“细胞系 + 比较组”。设置后，以“细胞系 × 比较组 × 单个目的基因 × 全部内参”为自动排板完整单元：只要单板可容纳就不跨板，即使因此增加孔板或留下空孔。
+- 超大比较单元默认拒绝生成；明确指定桥接样本后才允许拆分，并在涉及的每块板重复该桥接样本的目的基因及全部内参。未设置比较组时沿用原有样本级跨板规则。
+- 优化顺序为：比较单元完整性、孔板数、跨板内参/桥接重做、基因跨板批次、板内引物与样本切换。
+- 手动编辑支持单孔、Shift 连选、Ctrl/⌘ 不连续多选、拖动框选、复制/粘贴与平移；修改孔以独立颜色和边框标记，并重新执行全局校验，但提醒不限制保存或导出。
 - 反应用量按实际占用孔计算，包括跨板重复内参和手动编辑后的孔位。
 
 ## 反应计算 / Reaction calculation
@@ -46,8 +47,7 @@ Prepare volume = required volume × (1 + overage%)
 - `Design_Summary`
 - `Reaction_Setup`
 
-`Well_Detail` 会在 384 孔八道隔行模式下记录上样批次、来源行 A–H
-和八道样本组。批量导出 ZIP 还包含全部孔板总览工作簿。
+`Well_Detail` 会记录细胞系、比较组、桥接状态与跨板原因，并在 384 孔八道隔行模式下记录上样批次、来源行 A–H 和八道样本组；`Sample_cDNA` 按最终实际孔位统计桥接重复用量。批量导出 ZIP 还包含全部孔板总览工作簿。
 
 ## 特别说明 / Special note
 
@@ -69,15 +69,15 @@ node --test tests/rendered-html.test.mjs
 ## 代码结构 / Architecture
 
 - `lib/platePlanner.ts`：自动排板、派生指标与布局规则校验。
-- `lib/plannerSession.ts`：Planner Session 的唯一 lifecycle seam；统一实验设置、Plate Editing Session、反应体系、生成来源，以及 v1–v8 保存格式的恢复与序列化。
+- `lib/plannerSession.ts`：Planner Session 的唯一 lifecycle seam；统一实验设置、Plate Editing Session、反应体系、生成来源，以及 v1–v9 保存格式的恢复与序列化。
 - `lib/plateEditingSession.ts`：手动编辑的唯一业务入口；统一管理选择、框选、复制/粘贴、赋值、清空、恢复、平移、确认状态及 30 步撤销/重做，并在每次修改后刷新指标和校验结果。
 - `lib/reactionCalculator.ts`：从当前 Plate Plan 计算反应体系和试剂需求。
 - `lib/exportExcel.ts`：将当前 Plate Plan 投影为实验人员使用的 Excel 工作簿。
 - `app/QpcrPlanner.tsx`：负责界面展示、浏览器事件与用户提示，不再自行实现孔位编辑规则。
 
 Planner Session 由 `createPlannerSession()` 建立，通过
-`dispatchPlannerSession()` 执行生成、设置更新和孔板编辑；`lib/plannerDraftStorage.ts` 浏览器 adapter 只负责读取、写入或删除 `localStorage` 草稿。历史 v1–v7 数据由
-`restorePlannerSession()` 统一迁移为当前 v8 格式。编辑场景和保存兼容性分别集中在
+`dispatchPlannerSession()` 执行生成、设置更新和孔板编辑；`lib/plannerDraftStorage.ts` 浏览器 adapter 只负责读取、写入或删除 `localStorage` 草稿。历史 v1–v8 数据由
+`restorePlannerSession()` 统一迁移为当前 v9 格式。编辑场景和保存兼容性分别集中在
 `tests/plateEditingSession.test.ts` 与 `tests/plannerSession.test.ts`，避免针对内部 helper 重复建立碎片测试。
 
 只有点击“保存”后，实验方案才会写入当前浏览器的 `localStorage`，并在下次打开时自动恢复。“重置工具”会清除本机保存记录并恢复初始状态；样本名称不会由应用主动上传。

@@ -40,6 +40,9 @@ export interface SampleEntry {
   id: string;
   name: string;
   kind: SampleKind;
+  cellLine?: string;
+  comparisonGroup?: string;
+  isBridge?: boolean;
 }
 
 export interface GeneEntry {
@@ -103,8 +106,8 @@ export interface PlannerSessionTransition {
       };
 }
 
-interface StoredPlannerSessionV8 {
-  version: 8;
+interface StoredPlannerSessionV9 {
+  version: 9;
   setup: ExperimentSetup;
   plateEditing: {
     plan: PlanResult;
@@ -118,6 +121,10 @@ interface StoredPlannerSessionV8 {
   reactionSystem: ReactionSystemInput;
   language: PlannerLanguage;
 }
+
+type StoredPlannerSessionV8 = Omit<StoredPlannerSessionV9, "version"> & {
+  version: 8;
+};
 
 type LegacyStoredPlannerSession = Record<string, unknown> & {
   version: number;
@@ -167,6 +174,15 @@ export function plannerSessionPlanInput(setup: ExperimentSetup): PlanInput {
   return {
     plateType: setup.plateType,
     samples: setup.samples.map((sample) => sample.name.trim()).filter(Boolean),
+    sampleDesigns: setup.samples
+      .filter((sample) => sample.name.trim())
+      .map((sample) => ({
+        name: sample.name.trim(),
+        kind: sample.kind,
+        cellLine: sample.cellLine?.trim(),
+        comparisonGroup: sample.comparisonGroup?.trim(),
+        isBridge: Boolean(sample.isBridge),
+      })),
     targetGenes: setup.genes
       .filter((gene) => gene.role === "target" && gene.name.trim())
       .map((gene) => gene.name.trim()),
@@ -180,7 +196,15 @@ export function plannerSessionPlanInput(setup: ExperimentSetup): PlanInput {
 export function plannerSessionSignature(setup: ExperimentSetup) {
   return JSON.stringify({
     plateType: setup.plateType,
-    samples: setup.samples.map(({ name }) => name),
+    samples: setup.samples.map(
+      ({ name, kind, cellLine, comparisonGroup, isBridge }) => ({
+        name,
+        kind,
+        cellLine: cellLine ?? "",
+        comparisonGroup: comparisonGroup ?? "",
+        isBridge: Boolean(isBridge),
+      }),
+    ),
     genes: setup.genes.map(({ name, role }) => ({ name, role })),
     replicates: setup.replicates,
     layoutPreset: setup.layoutPreset,
@@ -459,8 +483,8 @@ export function dispatchPlannerSession(
 }
 
 export function serializePlannerSession(session: PlannerSession) {
-  const payload: StoredPlannerSessionV8 = {
-    version: 8,
+  const payload: StoredPlannerSessionV9 = {
+    version: 9,
     setup: session.setup,
     plateEditing: session.plateEditing
       ? {
@@ -481,9 +505,18 @@ export function serializePlannerSession(session: PlannerSession) {
   return JSON.stringify(payload);
 }
 
-function restoreV8(raw: StoredPlannerSessionV8): PlannerSession {
+function restoreCurrent(
+  raw: StoredPlannerSessionV8 | StoredPlannerSessionV9,
+): PlannerSession {
+  const samples = raw.setup.samples.map((sample) => ({
+    ...sample,
+    cellLine: sample.cellLine ?? "",
+    comparisonGroup: sample.comparisonGroup ?? "",
+    isBridge: Boolean(sample.isBridge),
+  }));
   const session = createPlannerSession({
     ...raw.setup,
+    samples,
     reactionSystem: raw.reactionSystem,
     language: raw.language,
   });
@@ -507,7 +540,7 @@ function restoreLegacy(
   options: RestorePlannerSessionOptions,
 ) {
   const createId = options.createId ?? defaultId;
-  const samples =
+  const restoredSamples =
     raw.version === 1
       ? (raw.samples as string[]).map((name, index) => ({
           id: createId("sample", index),
@@ -515,6 +548,12 @@ function restoreLegacy(
           kind: "sample" as const,
         }))
       : (raw.samples as SampleEntry[]);
+  const samples = restoredSamples.map((sample) => ({
+    ...sample,
+    cellLine: sample.cellLine ?? "",
+    comparisonGroup: sample.comparisonGroup ?? "",
+    isBridge: Boolean(sample.isBridge),
+  }));
   const layoutPreset =
     raw.version <= 2
       ? inferredLayoutPreset(raw.layout)
@@ -566,13 +605,18 @@ export function restorePlannerSession(
 ): RestorePlannerSessionResult {
   try {
     const raw = JSON.parse(serialized) as
+      | StoredPlannerSessionV9
       | StoredPlannerSessionV8
       | LegacyStoredPlannerSession;
     if (!raw || typeof raw !== "object" || !("version" in raw)) {
       throw new Error("Invalid saved planner session");
     }
-    if (raw.version === 8) {
-      return { ok: true, session: restoreV8(raw), migratedFrom: 8 };
+    if (raw.version === 9 || raw.version === 8) {
+      return {
+        ok: true,
+        session: restoreCurrent(raw),
+        migratedFrom: raw.version,
+      };
     }
     if (raw.version < 1 || raw.version > 7) {
       throw new Error("Unsupported saved planner session version");
