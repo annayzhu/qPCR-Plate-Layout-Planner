@@ -85,7 +85,12 @@ export interface CreatePlannerSessionInput {
 
 export type PlannerSessionCommand =
   | { type: "patch-setup"; patch: Partial<ExperimentSetup> }
-  | { type: "commit-entries"; samples: SampleEntry[]; genes: GeneEntry[] }
+  | {
+      type: "commit-entries";
+      samples: SampleEntry[];
+      genes: GeneEntry[];
+      previous?: { samples: SampleEntry[]; genes: GeneEntry[] };
+    }
   | { type: "undo-entries" }
   | { type: "redo-entries" }
   | { type: "set-reaction-system"; reactionSystem: ReactionSystemInput }
@@ -364,10 +369,10 @@ export function dispatchPlannerSession(
   if (command.type === "commit-entries") {
     const syncedHistory = {
       ...session.entryHistory,
-      present: {
-        samples: [...session.setup.samples],
-        genes: [...session.setup.genes],
-      },
+      present: command.previous ?? {
+          samples: [...session.setup.samples],
+          genes: [...session.setup.genes],
+        },
     };
     return {
       session: {

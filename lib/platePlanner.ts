@@ -965,6 +965,7 @@ function comparisonAllocationUnits(
   targetGenes: string[],
   capacity: number,
   load: (plate: PackedPlate) => number,
+  replicates: number,
 ) {
   const sampleIndex = new Map(
     samples.map((sample, index) => [sample, index]),
@@ -992,7 +993,8 @@ function comparisonAllocationUnits(
         sample: member.name,
         gene,
       }));
-      if (loadAfterPairs(emptyPackedPlate(), fullPairs, load) <= capacity) {
+      const requiredBlocks = loadAfterPairs(emptyPackedPlate(), fullPairs, load);
+      if (requiredBlocks <= capacity) {
         units.push({
           pairs: fullPairs,
           sampleOrder: firstSampleOrder,
@@ -1008,7 +1010,7 @@ function comparisonAllocationUnits(
       if (bridgePairs.length === 0) {
         throw new PlatePlannerError(
           "E_COMPARISON_UNIT_TOO_LARGE",
-          `比较组“${members[0].cellLine} / ${members[0].comparisonGroup}”检测 ${gene} 时无法装入单块板；请指定桥接样本后显式跨板。 / The comparison unit cannot fit one plate; select a bridge sample to enable an explicit cross-plate design.`,
+          `比较组“${members[0].cellLine} / ${members[0].comparisonGroup}”检测 ${gene} 需要 ${requiredBlocks * replicates} 孔，单板当前最多可用 ${capacity * replicates} 孔；请指定桥接样本后显式跨板。 / The comparison unit needs ${requiredBlocks * replicates} wells but only ${capacity * replicates} are available; select a bridge sample to enable an explicit cross-plate design.`,
         );
       }
       if (loadAfterPairs(emptyPackedPlate(), bridgePairs, load) > capacity) {
@@ -1078,6 +1080,7 @@ function generateComparisonPackings(
   targetGenes: string[],
   capacity: number,
   load: (plate: PackedPlate) => number,
+  replicates: number,
 ) {
   const units = comparisonAllocationUnits(
     samples,
@@ -1085,6 +1088,7 @@ function generateComparisonPackings(
     targetGenes,
     capacity,
     load,
+    replicates,
   );
   const orders = [
     units.slice().sort(
@@ -1669,6 +1673,7 @@ export function planPlateLayout(
           input.targetGenes,
           input.blockCapacity,
           standardLoad,
+          input.replicates,
         )
       : generatePackings(
           input.samples,
@@ -1695,6 +1700,7 @@ export function planPlateLayout(
             input.targetGenes,
             input.blocksPerRow,
             geneBandLoadForInput,
+            input.replicates,
           )
         : generateGeneBandPackings(
             input.samples,

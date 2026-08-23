@@ -357,6 +357,10 @@ export function QpcrPlanner() {
   const [samplePaste, setSamplePaste] = useState("");
   const [genePaste, setGenePaste] = useState("");
   const [sampleQuickCount, setSampleQuickCount] = useState("");
+  const [selectedSampleIds, setSelectedSampleIds] = useState<string[]>([]);
+  const [bulkCellLine, setBulkCellLine] = useState("");
+  const [bulkComparisonGroup, setBulkComparisonGroup] = useState("");
+  const entryEditStartRef = useRef<EntrySnapshot<SampleEntry, GeneEntry> | null>(null);
   const [geneQuickCount, setGeneQuickCount] = useState("");
   const [activePlateIndex, setActivePlateIndex] = useState(0);
   const [editor, setEditor] = useState<EditorState | null>(null);
@@ -667,6 +671,7 @@ export function QpcrPlanner() {
   const comparisonAdvisories = useMemo(() => {
     const counts = new Map<string, number>();
     const labels = new Map<string, string>();
+    const sampleIds = new Map<string, string[]>();
     for (const sample of samples) {
       const cellLine = sample.cellLine?.trim();
       if (
@@ -679,15 +684,19 @@ export function QpcrPlanner() {
       const key = normalizedKey(cellLine);
       counts.set(key, (counts.get(key) ?? 0) + 1);
       labels.set(key, cellLine);
+      sampleIds.set(key, [...(sampleIds.get(key) ?? []), sample.id]);
     }
     return Array.from(counts.entries())
       .filter(([, count]) => count > 1)
-      .map(([key, count]) =>
-        tr(
+      .map(([key, count]) => ({
+        key,
+        cellLine: labels.get(key) ?? "",
+        sampleIds: sampleIds.get(key) ?? [],
+        message: tr(
           `${labels.get(key)} 有 ${count} 个未设置比较组的样本；如需直接比较，请建立比较组。`,
           `${labels.get(key)} has ${count} ungrouped samples; create a comparison group if they will be compared directly.`,
         ),
-      );
+      }));
   }, [samples, tr]);
 
   const audit = useMemo(
@@ -798,13 +807,31 @@ export function QpcrPlanner() {
 
   function commitEntrySnapshot(
     next: EntrySnapshot<SampleEntry, GeneEntry>,
+    previous?: EntrySnapshot<SampleEntry, GeneEntry>,
   ) {
     applyPlannerCommand({
       type: "commit-entries",
       samples: next.samples,
       genes: next.genes,
+      previous,
     });
     markChanged();
+  }
+
+  function beginEntryTextEdit() {
+    entryEditStartRef.current = {
+      samples: samples.map((sample) => ({ ...sample })),
+      genes: genes.map((gene) => ({ ...gene })),
+    };
+  }
+
+  function finishEntryTextEdit() {
+    const previous = entryEditStartRef.current;
+    entryEditStartRef.current = null;
+    if (!previous) return;
+    const next = { samples, genes };
+    if (JSON.stringify(previous) === JSON.stringify(next)) return;
+    commitEntrySnapshot(next, previous);
   }
 
   function transitionEntries(
@@ -1031,6 +1058,46 @@ export function QpcrPlanner() {
             ),
     });
     return additions.length;
+  }
+
+  function applyBulkSampleMetadata() {
+    const selected = new Set(selectedSampleIds);
+    const cellLine = bulkCellLine.trim();
+    const comparisonGroup = bulkComparisonGroup.trim();
+    if (selected.size === 0) return;
+    if (comparisonGroup && !cellLine) {
+      setToast({
+        tone: "error",
+        message: tr(
+          "批量设置比较组时必须同时填写细胞系。",
+          "Bulk comparison-group assignment also requires a cell line.",
+        ),
+      });
+      return;
+    }
+    commitEntrySnapshot({
+      samples: samples.map((sample) =>
+        selected.has(sample.id) && sample.kind !== "blank"
+          ? {
+              ...sample,
+              cellLine,
+              comparisonGroup,
+              isBridge: comparisonGroup ? sample.isBridge : false,
+            }
+          : sample,
+      ),
+      genes,
+    });
+    setSelectedSampleIds([]);
+    setBulkCellLine("");
+    setBulkComparisonGroup("");
+    setToast({
+      tone: "success",
+      message: tr(
+        `已更新 ${selected.size} 个样本的实验分组。`,
+        `Updated design metadata for ${selected.size} sample(s).`,
+      ),
+    });
   }
 
   function addGenes(
@@ -2217,6 +2284,7 @@ export function QpcrPlanner() {
                     setSampleInputKind("sample");
                     setSampleDraftOpen(false);
                     setSampleQuickCount("");
+                    setSelectedSampleIds([]);
                   }}
                 >
                   {tr("清空", "Clear")}
@@ -2291,6 +2359,31 @@ export function QpcrPlanner() {
                       "Drag to reorder; row 2 is cell line, comparison group, bridge; ⌘/Ctrl+Z to undo",
                     )}
                   </p>
+                  {selectedSampleIds.length > 0 && (
+                    <div className="sample-bulk-metadata" role="group">
+                      <strong>
+                        {tr(
+                          `已选 ${selectedSampleIds.length} 个样本`,
+                          `${selectedSampleIds.length} sample(s) selected`,
+                        )}
+                      </strong>
+                      <input
+                        value={bulkCellLine}
+                        onChange={(event) => setBulkCellLine(event.target.value)}
+                        placeholder={tr("批量细胞系", "Bulk cell line")}
+                        aria-label={tr("批量设置细胞系", "Set cell line in bulk")}
+                      />
+                      <input
+                        value={bulkComparisonGroup}
+                        onChange={(event) => setBulkComparisonGroup(event.target.value)}
+                        placeholder={tr("批量比较组", "Bulk comparison group")}
+                        aria-label={tr("批量设置比较组", "Set comparison group in bulk")}
+                      />
+                      <button type="button" onClick={applyBulkSampleMetadata}>
+                        {tr("应用", "Apply")}
+                      </button>
+                    </div>
+                  )}
                   {samples.map((sample, index) => (
                     <SortableEntryRow
                       key={sample.id}
@@ -2355,6 +2448,11 @@ export function QpcrPlanner() {
                         }`}
                         type="button"
                         onClick={() => {
+                          if (sample.kind === "sample") {
+                            setSelectedSampleIds((current) =>
+                              current.filter((id) => id !== sample.id),
+                            );
+                          }
                           commitEntrySnapshot({
                             samples: samples.map((item) =>
                               item.id === sample.id
@@ -2395,6 +2493,9 @@ export function QpcrPlanner() {
                         className="sample-delete-button"
                         type="button"
                         onClick={() => {
+                          setSelectedSampleIds((current) =>
+                            current.filter((id) => id !== sample.id),
+                          );
                           commitEntrySnapshot({
                             samples: samples.filter(
                               (item) => item.id !== sample.id,
@@ -2410,10 +2511,33 @@ export function QpcrPlanner() {
                         <Trash2 size={15} />
                       </button>
                       <div className="sample-metadata-row">
+                        <button
+                          className={`sample-select-toggle ${
+                            selectedSampleIds.includes(sample.id) ? "is-active" : ""
+                          }`}
+                          type="button"
+                          disabled={sample.kind === "blank"}
+                          onClick={() =>
+                            setSelectedSampleIds((current) =>
+                              current.includes(sample.id)
+                                ? current.filter((id) => id !== sample.id)
+                                : [...current, sample.id],
+                            )
+                          }
+                          aria-pressed={selectedSampleIds.includes(sample.id)}
+                          aria-label={tr(
+                            `选择样本 ${sample.name || "当前行"}进行批量设置`,
+                            `Select ${sample.name || "this sample"} for bulk assignment`,
+                          )}
+                          title={tr("选择后批量设置分组", "Select for bulk assignment")}
+                        >
+                          {selectedSampleIds.includes(sample.id) && <Check size={12} />}
+                        </button>
                         <input
                           className="sample-metadata-input"
                           value={sample.cellLine ?? ""}
                           disabled={sample.kind === "blank"}
+                          onFocus={beginEntryTextEdit}
                           onChange={(event) => {
                             const cellLine = event.target.value;
                             setSamples((current) =>
@@ -2425,6 +2549,7 @@ export function QpcrPlanner() {
                             );
                             markChanged();
                           }}
+                          onBlur={finishEntryTextEdit}
                           placeholder={tr("细胞系（可选）", "Cell line (optional)")}
                           aria-label={tr(
                             `${sample.name || "当前样本"}的细胞系`,
@@ -2435,6 +2560,7 @@ export function QpcrPlanner() {
                           className="sample-metadata-input"
                           value={sample.comparisonGroup ?? ""}
                           disabled={sample.kind === "blank"}
+                          onFocus={beginEntryTextEdit}
                           onChange={(event) => {
                             const comparisonGroup = event.target.value;
                             setSamples((current) =>
@@ -2446,6 +2572,7 @@ export function QpcrPlanner() {
                             );
                             markChanged();
                           }}
+                          onBlur={finishEntryTextEdit}
                           placeholder={tr("比较组（可选）", "Comparison group (optional)")}
                           aria-label={tr(
                             `${sample.name || "当前样本"}的比较组`,
@@ -2481,10 +2608,20 @@ export function QpcrPlanner() {
                       </div>
                     </SortableEntryRow>
                   ))}
-                  {comparisonAdvisories.map((message) => (
-                    <p className="comparison-advisory" key={message}>
+                  {comparisonAdvisories.map((advisory) => (
+                    <p className="comparison-advisory" key={advisory.key}>
                       <Info size={12} />
-                      {message}
+                      <span>{advisory.message}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedSampleIds(advisory.sampleIds);
+                          setBulkCellLine(advisory.cellLine);
+                          setBulkComparisonGroup("");
+                        }}
+                      >
+                        {tr("设置比较组", "Assign group")}
+                      </button>
                     </p>
                   ))}
                 </div>

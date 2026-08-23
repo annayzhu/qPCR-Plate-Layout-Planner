@@ -826,6 +826,121 @@ test("comparison units remain intact in both 384-well loading patterns", () => {
   }
 });
 
+test("comparison identity normalizes case and whitespace while preserving display metadata", () => {
+  const input = {
+    plateType: 96 as const,
+    samples: ["Control", "KD"],
+    sampleDesigns: [
+      { name: "Control", cellLine: " A549 ", comparisonGroup: " FBN2 KD " },
+      { name: "KD", cellLine: "a549", comparisonGroup: "fbn2 kd" },
+    ],
+    targetGenes: ["G1"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+  const result = planPlateLayout(input);
+  assert.equal(result.plates.length, 1);
+  const control = result.plates[0].wells.find((well) => well.sample === "Control");
+  assert.equal(control?.cellLine, "A549");
+  assert.equal(control?.comparisonGroup, "FBN2 KD");
+  assert.equal(validateLayout(result, input).valid, true);
+});
+
+test("oversized units support multiple bridges and report capacity without them", () => {
+  const samples = Array.from({ length: 17 }, (_, index) => `S${index + 1}`);
+  const base = {
+    plateType: 96 as const,
+    samples,
+    targetGenes: ["G1"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+  assert.throws(
+    () =>
+      planPlateLayout({
+        ...base,
+        sampleDesigns: samples.map((name) => ({
+          name,
+          cellLine: "A549",
+          comparisonGroup: "KD",
+        })),
+      }),
+    (error) =>
+      error instanceof PlatePlannerError &&
+      error.code === "E_COMPARISON_UNIT_TOO_LARGE" &&
+      /102 wells.*96 are available/.test(error.message),
+  );
+  assert.throws(
+    () =>
+      planPlateLayout({
+        ...base,
+        sampleDesigns: samples.map((name) => ({
+          name,
+          cellLine: "A549",
+          comparisonGroup: "KD",
+          isBridge: true,
+        })),
+      }),
+    (error) =>
+      error instanceof PlatePlannerError &&
+      error.code === "E_BRIDGE_OVERHEAD_TOO_LARGE",
+  );
+  const input = {
+    ...base,
+    sampleDesigns: samples.map((name, index) => ({
+      name,
+      cellLine: "A549",
+      comparisonGroup: "KD",
+      isBridge: index < 2,
+    })),
+  };
+  const result = planPlateLayout(input);
+  for (const plate of result.plates) {
+    for (const bridge of ["S1", "S2"]) {
+      assert.equal(
+        plate.wells.filter((well) => well.sample === bridge && well.gene === "G1").length,
+        3,
+      );
+      assert.equal(
+        plate.wells.filter((well) => well.sample === bridge && well.gene === "R1").length,
+        3,
+      );
+    }
+  }
+  assert.equal(validateLayout(result, input).valid, true);
+});
+
+test("manual comparison-unit splits produce a high-priority advisory", () => {
+  const samples = Array.from({ length: 15 }, (_, index) => `S${index + 1}`);
+  const input = {
+    plateType: 96 as const,
+    samples,
+    sampleDesigns: samples.map((name, index) => ({
+      name,
+      cellLine: `Cell-${Math.floor(index / 5) + 1}`,
+      comparisonGroup: "KD",
+    })),
+    targetGenes: ["G1", "G2", "G3"],
+    referenceGenes: ["R1"],
+    replicates: 3,
+  };
+  const result = planPlateLayout(input);
+  const destination = result.plates[1].wells.filter((well) => !well.sample).slice(0, 3);
+  destination.forEach((well, index) => {
+    Object.assign(well, {
+      sample: "S1",
+      gene: "G1",
+      geneType: "target",
+      replicateIndex: index + 1,
+      source: "manual",
+    });
+  });
+  const audit = validateLayout(result, input);
+  const issue = audit.errors.find((item) => item.code === "E_COMPARISON_UNIT_SPLIT");
+  assert.equal(issue?.severity, "high");
+  assert.match(issue?.message ?? "", /Cell-1 \/ KD/);
+});
+
 test("validation catches a missing same-plate reference block", () => {
   const input = {
     plateType: 96 as const,

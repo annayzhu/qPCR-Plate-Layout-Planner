@@ -652,8 +652,77 @@ select:focus-visible,
 .sample-metadata-row {
   display: grid;
   grid-column: 2 / -1;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  grid-template-columns: 25px minmax(0, 1fr) minmax(0, 1fr) auto;
   gap: 6px;
+}
+
+.sample-select-toggle {
+  display: grid;
+  width: 25px;
+  min-height: 32px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: white;
+  cursor: pointer;
+}
+
+.sample-select-toggle.is-active {
+  border-color: var(--action);
+  background: var(--action);
+}
+
+.sample-select-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.sample-bulk-metadata {
+  position: sticky;
+  z-index: 3;
+  top: 31px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid #c9d8e4;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 96%, #e5edf5);
+  box-shadow: 0 5px 18px rgba(41, 70, 94, 0.08);
+}
+
+.sample-bulk-metadata strong {
+  color: var(--ink-secondary);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.sample-bulk-metadata input {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.sample-bulk-metadata button,
+.comparison-advisory button {
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid var(--action);
+  border-radius: 8px;
+  background: var(--action-soft);
+  color: var(--action);
+  cursor: pointer;
+  font-size: 9px;
+  font-weight: 720;
+  white-space: nowrap;
 }
 
 .sample-metadata-input,
@@ -709,6 +778,10 @@ select:focus-visible,
   color: #705f2e;
   font-size: 9px;
   line-height: 1.45;
+}
+
+.comparison-advisory span {
+  flex: 1 1 auto;
 }
 
 .comparison-advisory svg {
@@ -2869,10 +2942,19 @@ select:focus-visible,
   }
 
   .sample-metadata-row {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-columns: 25px minmax(0, 1fr) minmax(0, 1fr);
   }
 
   .bridge-toggle {
+    grid-column: 2 / -1;
+  }
+
+  .sample-bulk-metadata {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .sample-bulk-metadata strong,
+  .sample-bulk-metadata button {
     grid-column: 1 / -1;
   }
 

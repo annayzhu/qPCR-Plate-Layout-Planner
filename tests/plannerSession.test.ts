@@ -302,6 +302,38 @@ test("setup entry history is owned by the Planner Session", () => {
   assert.deepEqual(session.setup.samples, nextSamples);
 });
 
+test("metadata text edits can record their pre-focus state for undo and stale detection", () => {
+  let session = createPlannerSession({ samples, genes });
+  session = dispatchPlannerSession(session, {
+    type: "generate-layout",
+    generatedAt: "now",
+  }).session;
+  const previous = {
+    samples: session.setup.samples.map((sample) => ({ ...sample })),
+    genes: session.setup.genes.map((gene) => ({ ...gene })),
+  };
+  const editedSamples = session.setup.samples.map((sample) => ({
+    ...sample,
+    cellLine: "A549",
+    comparisonGroup: "FBN2 KD",
+  }));
+  session = dispatchPlannerSession(session, {
+    type: "patch-setup",
+    patch: { samples: editedSamples },
+  }).session;
+  session = dispatchPlannerSession(session, {
+    type: "commit-entries",
+    samples: editedSamples,
+    genes,
+    previous,
+  }).session;
+  assert.equal(plannerSessionIsStale(session), true);
+  session = dispatchPlannerSession(session, { type: "undo-entries" }).session;
+  assert.deepEqual(session.setup.samples, samples);
+  session = dispatchPlannerSession(session, { type: "redo-entries" }).session;
+  assert.deepEqual(session.setup.samples, editedSamples);
+});
+
 test("Saved Planner Draft excludes transient editing controls and history", () => {
   let session = createPlannerSession({ samples, genes });
   session = dispatchPlannerSession(session, {
