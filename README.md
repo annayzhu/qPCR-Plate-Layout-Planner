@@ -66,4 +66,18 @@ npm run build
 node --test tests/rendered-html.test.mjs
 ```
 
+## 代码结构 / Architecture
+
+- `lib/platePlanner.ts`：自动排板、派生指标与布局规则校验。
+- `lib/plannerSession.ts`：Planner Session 的唯一 lifecycle seam；统一实验设置、Plate Editing Session、反应体系、生成来源，以及 v1–v8 保存格式的恢复与序列化。
+- `lib/plateEditingSession.ts`：手动编辑的唯一业务入口；统一管理选择、框选、复制/粘贴、赋值、清空、恢复、平移、确认状态及 30 步撤销/重做，并在每次修改后刷新指标和校验结果。
+- `lib/reactionCalculator.ts`：从当前 Plate Plan 计算反应体系和试剂需求。
+- `lib/exportExcel.ts`：将当前 Plate Plan 投影为实验人员使用的 Excel 工作簿。
+- `app/QpcrPlanner.tsx`：负责界面展示、浏览器事件与用户提示，不再自行实现孔位编辑规则。
+
+Planner Session 由 `createPlannerSession()` 建立，通过
+`dispatchPlannerSession()` 执行生成、设置更新和孔板编辑；`lib/plannerDraftStorage.ts` 浏览器 adapter 只负责读取、写入或删除 `localStorage` 草稿。历史 v1–v7 数据由
+`restorePlannerSession()` 统一迁移为当前 v8 格式。编辑场景和保存兼容性分别集中在
+`tests/plateEditingSession.test.ts` 与 `tests/plannerSession.test.ts`，避免针对内部 helper 重复建立碎片测试。
+
 只有点击“保存”后，实验方案才会写入当前浏览器的 `localStorage`，并在下次打开时自动恢复。“重置工具”会清除本机保存记录并恢复初始状态；样本名称不会由应用主动上传。

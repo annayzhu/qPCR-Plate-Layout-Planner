@@ -6,6 +6,8 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
+  ClipboardPaste,
+  Copy,
   Download,
   FlaskConical,
   GripVertical,
@@ -24,6 +26,8 @@ import {
   Trash2,
   Undo2,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -33,6 +37,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
+  type SetStateAction,
   useCallback,
   useEffect,
   useMemo,
@@ -46,69 +51,52 @@ import {
   type ExportablePlate,
 } from "@/lib/exportExcel";
 import {
-  createEntryHistory,
   moveEntryById,
   moveEntryByOffset,
-  recordEntryState,
-  redoEntryState,
-  undoEntryState,
-  type EntryHistory,
   type EntrySnapshot,
 } from "@/lib/entryHistory";
-import {
-  calculateReactionRequirements,
-  DEFAULT_REACTION_SYSTEM,
-  normalizeReactionSystemInput,
-  type LegacyReactionSystemInput,
-  type ReactionSystemInput,
-} from "@/lib/reactionCalculator";
+import { type ReactionSystemInput } from "@/lib/reactionCalculator";
 import {
   generateNumberedEntries,
   MAX_QUICK_ENTRY_COUNT,
   parseQuickEntryCount,
 } from "@/lib/quickEntries";
+import { type PlateEditCommand } from "@/lib/plateEditingSession";
 import {
-  applyBoxSelection,
-  assignSelectedWells,
-  rectangularWellIds,
-  translateSelectedWells,
-  type BoxSelectionMode,
-} from "@/lib/manualLayout";
+  clearPlannerDraft,
+  loadPlannerDraft,
+  savePlannerDraft,
+} from "@/lib/plannerDraftStorage";
 import {
-  defaultPlateName,
+  createPlannerSession,
+  dispatchPlannerSession,
+  plannerSessionAudit,
+  plannerSessionIsStale,
+  plannerSessionReactionCalculation,
+  type ExperimentSetup,
+  type GeneEntry,
+  type GeneRole,
+  type PlannerLanguage,
+  type PlannerSession,
+  type PlannerSessionCommand,
+  type SampleEntry,
+  type SampleKind,
+} from "@/lib/plannerSession";
+import {
   formatWellId,
   getPlateDimensions,
-  planPlateLayout,
-  refreshPlanDerivedData,
-  validateLayout,
   type GeneType,
   type LayoutFillDirection,
   type LayoutPreset,
   type LoadingPattern,
-  type PlanInput,
   type PlannerPlate,
   type PlannerWell,
   type PlanResult,
   type PlateType,
-  type ValidationIssue,
 } from "@/lib/platePlanner";
 import { ReactionCalculator } from "@/app/ReactionCalculator";
 
-type GeneRole = "target" | "reference";
-type SampleKind = "sample" | "blank";
-type Language = "zh" | "en";
-
-interface GeneEntry {
-  id: string;
-  name: string;
-  role: GeneRole;
-}
-
-interface SampleEntry {
-  id: string;
-  name: string;
-  kind: SampleKind;
-}
+type Language = PlannerLanguage;
 
 interface EditorState {
   plateIndex: number;
@@ -135,7 +123,7 @@ interface BoxSelectionState {
   anchorWellId: string;
   endWellId: string;
   baseWellIds: string[];
-  mode: BoxSelectionMode;
+  mode: "replace" | "add";
   startX: number;
   startY: number;
   currentX: number;
@@ -248,93 +236,6 @@ function SortableEntryRow({
   );
 }
 
-interface StoredPlannerState {
-  version: 7;
-  plateType: PlateType;
-  samples: SampleEntry[];
-  genes: GeneEntry[];
-  replicates: number;
-  layoutPreset: LayoutPreset;
-  loadingPattern: LoadingPattern;
-  fillDirection: LayoutFillDirection;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: Partial<ReactionSystemInput>;
-  language: Language;
-}
-
-type StoredPlannerStateV6 = Omit<
-  StoredPlannerState,
-  "version" | "fillDirection"
-> & {
-  version: 6;
-};
-
-type StoredPlannerStateV5 = Omit<
-  StoredPlannerState,
-  "version" | "reactionSystem" | "fillDirection"
-> & {
-  version: 5;
-  reactionSystem?: LegacyReactionSystemInput;
-};
-
-type StoredPlannerStateV4 = Omit<
-  StoredPlannerState,
-  "version" | "reactionSystem" | "fillDirection"
-> & {
-  version: 4;
-  reactionSystem?: LegacyReactionSystemInput;
-};
-
-interface StoredPlannerStateV3 {
-  version: 3;
-  plateType: PlateType;
-  samples: SampleEntry[];
-  genes: GeneEntry[];
-  replicates: number;
-  layoutPreset: LayoutPreset;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: LegacyReactionSystemInput;
-  language: Language;
-}
-
-interface StoredPlannerStateV2 {
-  version: 2;
-  plateType: PlateType;
-  samples: SampleEntry[];
-  genes: GeneEntry[];
-  replicates: number;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: LegacyReactionSystemInput;
-  language: Language;
-}
-
-interface StoredPlannerStateV1 {
-  version: 1;
-  plateType: PlateType;
-  samples: string[];
-  genes: GeneEntry[];
-  replicates: number;
-  layout: PlanResult | null;
-  automaticLayout: PlanResult | null;
-  layoutSignature: string;
-  generatedAt: string;
-  confirmed: Record<string, boolean>;
-  reactionSystem?: LegacyReactionSystemInput;
-}
-
-const STORAGE_KEY = "qpcr-plate-planner:v1";
 const TARGET_PALETTE = [
   { background: "#DDE8F2", text: "#29465E" },
   { background: "#DCEBE8", text: "#26564F" },
@@ -351,34 +252,10 @@ function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function clonePlan<T>(value: T): T {
-  if (typeof structuredClone === "function") return structuredClone(value);
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
-function withPlateNames(
-  result: PlanResult | null,
-  fallbackLoadingPattern: LoadingPattern = "sequential",
-  fallbackFillDirection: LayoutFillDirection = "vertical",
-) {
-  if (!result) return null;
-  return {
-    ...result,
-    loadingPattern: result.loadingPattern ?? fallbackLoadingPattern,
-    fillDirection: result.fillDirection ?? fallbackFillDirection,
-    plates: result.plates.map((plate) => ({
-      ...plate,
-      name: plate.name?.trim() || defaultPlateName(plate.plateNumber),
-    })),
-  };
-}
-
-function migrateLegacySamples(samples: string[]): SampleEntry[] {
-  return samples.map((name) => ({
-    id: makeId("sample"),
-    name,
-    kind: "sample",
-  }));
+function resolveStateAction<T>(action: SetStateAction<T>, current: T) {
+  return typeof action === "function"
+    ? (action as (value: T) => T)(current)
+    : action;
 }
 
 function parseExcelNames(value: string) {
@@ -394,97 +271,6 @@ function normalizedKey(value: string) {
 
 function defaultLoadingPattern(plateType: PlateType): LoadingPattern {
   return plateType === 384 ? "interleaved-8-channel" : "sequential";
-}
-
-function experimentSignature(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-  layoutPreset: LayoutPreset,
-  loadingPattern: LoadingPattern,
-  fillDirection: LayoutFillDirection,
-) {
-  return JSON.stringify({
-    plateType,
-    samples: samples.map(({ name }) => name),
-    genes: genes.map(({ name, role }) => ({ name, role })),
-    replicates,
-    layoutPreset,
-    loadingPattern,
-    fillDirection,
-  });
-}
-
-function experimentSignatureV3(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-  layoutPreset: LayoutPreset,
-) {
-  return JSON.stringify({
-    plateType,
-    samples: samples.map(({ name }) => name),
-    genes: genes.map(({ name, role }) => ({ name, role })),
-    replicates,
-    layoutPreset,
-  });
-}
-
-function experimentSignatureV2(
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-) {
-  return JSON.stringify({
-    plateType,
-    samples: samples.map(({ name }) => name),
-    genes: genes.map(({ name, role }) => ({ name, role })),
-    replicates,
-  });
-}
-
-function inferredLayoutPreset(result: PlanResult | null): LayoutPreset {
-  return result?.strategy === "gene-major" ? "gene-major" : "sample-major";
-}
-
-function migrateLayoutSignature(
-  storedSignature: string,
-  plateType: PlateType,
-  samples: SampleEntry[],
-  genes: GeneEntry[],
-  replicates: number,
-  layoutPreset: LayoutPreset,
-  loadingPattern: LoadingPattern,
-  fillDirection: LayoutFillDirection,
-) {
-  if (!storedSignature) return "";
-  const v2Signature = experimentSignatureV2(
-    plateType,
-    samples,
-    genes,
-    replicates,
-  );
-  const v3Signature = experimentSignatureV3(
-    plateType,
-    samples,
-    genes,
-    replicates,
-    layoutPreset,
-  );
-  return storedSignature === v2Signature || storedSignature === v3Signature
-    ? experimentSignature(
-        plateType,
-        samples,
-        genes,
-        replicates,
-        layoutPreset,
-        loadingPattern,
-        fillDirection,
-      )
-    : storedSignature;
 }
 
 function strategyLabel(strategy: PlanResult["strategy"]) {
@@ -539,22 +325,15 @@ function plateStatus(
 }
 
 export function QpcrPlanner() {
-  const [plateType, setPlateType] = useState<PlateType>(96);
-  const [samples, setSamples] = useState<SampleEntry[]>([]);
-  const [genes, setGenes] = useState<GeneEntry[]>([]);
-  const [entryHistory, setEntryHistory] = useState(() =>
-    createEntryHistory<SampleEntry, GeneEntry>({ samples: [], genes: [] }),
+  const [plannerSession, setPlannerSession] = useState<PlannerSession>(() =>
+    createPlannerSession(),
   );
+  const plannerSessionRef = useRef(plannerSession);
+  useEffect(() => {
+    plannerSessionRef.current = plannerSession;
+  }, [plannerSession]);
   const [draggedEntry, setDraggedEntry] = useState<DraggedEntry | null>(null);
   const [dropTarget, setDropTarget] = useState<DraggedEntry | null>(null);
-  const [language, setLanguage] = useState<Language>("zh");
-  const [replicates, setReplicates] = useState(3);
-  const [layoutPreset, setLayoutPreset] =
-    useState<LayoutPreset>("gene-major");
-  const [loadingPattern, setLoadingPattern] =
-    useState<LoadingPattern>("sequential");
-  const [fillDirection, setFillDirection] =
-    useState<LayoutFillDirection>("vertical");
   const [sampleInput, setSampleInput] = useState("");
   const [sampleInputKind, setSampleInputKind] =
     useState<SampleKind>("sample");
@@ -567,34 +346,110 @@ export function QpcrPlanner() {
   const [genePaste, setGenePaste] = useState("");
   const [sampleQuickCount, setSampleQuickCount] = useState("");
   const [geneQuickCount, setGeneQuickCount] = useState("");
-  const [layout, setLayout] = useState<PlanResult | null>(null);
-  const [automaticLayout, setAutomaticLayout] = useState<PlanResult | null>(
-    null,
-  );
-  const [layoutSignature, setLayoutSignature] = useState("");
-  const [generatedAt, setGeneratedAt] = useState("");
   const [activePlateIndex, setActivePlateIndex] = useState(0);
-  const [confirmed, setConfirmed] = useState<Record<string, boolean>>({});
-  const [undoStack, setUndoStack] = useState<PlanResult[]>([]);
-  const [redoStack, setRedoStack] = useState<PlanResult[]>([]);
   const [editor, setEditor] = useState<EditorState | null>(null);
-  const [selectedWellIds, setSelectedWellIds] = useState<string[]>([]);
-  const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(
-    null,
-  );
   const [boxSelection, setBoxSelection] =
     useState<BoxSelectionState | null>(null);
   const boxSelectionRef = useRef<BoxSelectionState | null>(null);
   const suppressWellClickRef = useRef(false);
-  const [moveMode, setMoveMode] = useState(false);
+  const [plateZoom, setPlateZoom] = useState(1);
   const [editingPlateName, setEditingPlateName] = useState(false);
   const [plateNameDraft, setPlateNameDraft] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [savedAt, setSavedAt] = useState("");
   const [dirty, setDirty] = useState(false);
   const [hydrated, setHydrated] = useState(false);
-  const [reactionSystem, setReactionSystem] =
-    useState<ReactionSystemInput>(DEFAULT_REACTION_SYSTEM);
+  const {
+    plateType,
+    samples,
+    genes,
+    replicates,
+    layoutPreset,
+    loadingPattern,
+    fillDirection,
+  } = plannerSession.setup;
+  const editingSession = plannerSession.plateEditing;
+  const generatedAt = plannerSession.generatedAt;
+  const reactionSystem = plannerSession.reactionSystem;
+  const language = plannerSession.language;
+  const entryHistory = plannerSession.entryHistory;
+  const layout = editingSession?.plan ?? null;
+  const confirmed = useMemo(
+    () =>
+      Object.fromEntries(
+        [...(editingSession?.confirmedPlateNumbers ?? [])].map(
+          (plateNumber) => [String(plateNumber), true],
+        ),
+      ) as Record<string, boolean>,
+    [editingSession],
+  );
+  const selectedWellIds = editingSession?.selection.wellIds ?? [];
+  const selectionAnchorId = editingSession?.selection.anchorWellId ?? null;
+  const moveMode = editingSession?.moveMode ?? false;
+  const wellClipboard = editingSession?.clipboard ?? null;
+  const undoStack = editingSession?.undoStack ?? [];
+  const redoStack = editingSession?.redoStack ?? [];
+
+  function replacePlannerSession(next: PlannerSession) {
+    plannerSessionRef.current = next;
+    setPlannerSession(next);
+  }
+
+  function applyPlannerCommand(command: PlannerSessionCommand) {
+    const result = dispatchPlannerSession(plannerSessionRef.current, command);
+    replacePlannerSession(result.session);
+    return result;
+  }
+
+  function patchPlannerSetup(patch: Partial<ExperimentSetup>) {
+    applyPlannerCommand({ type: "patch-setup", patch });
+  }
+
+  function setPlateType(action: SetStateAction<PlateType>) {
+    patchPlannerSetup({ plateType: resolveStateAction(action, plateType) });
+  }
+
+  function setSamples(action: SetStateAction<SampleEntry[]>) {
+    patchPlannerSetup({ samples: resolveStateAction(action, samples) });
+  }
+
+  function setGenes(action: SetStateAction<GeneEntry[]>) {
+    patchPlannerSetup({ genes: resolveStateAction(action, genes) });
+  }
+
+  function setReplicates(action: SetStateAction<number>) {
+    patchPlannerSetup({ replicates: resolveStateAction(action, replicates) });
+  }
+
+  function setLayoutPreset(action: SetStateAction<LayoutPreset>) {
+    patchPlannerSetup({
+      layoutPreset: resolveStateAction(action, layoutPreset),
+    });
+  }
+
+  function setLoadingPattern(action: SetStateAction<LoadingPattern>) {
+    patchPlannerSetup({
+      loadingPattern: resolveStateAction(action, loadingPattern),
+    });
+  }
+
+  function setFillDirection(action: SetStateAction<LayoutFillDirection>) {
+    patchPlannerSetup({
+      fillDirection: resolveStateAction(action, fillDirection),
+    });
+  }
+
+  function setReactionSystem(action: SetStateAction<ReactionSystemInput>) {
+    const next = resolveStateAction(action, reactionSystem);
+    applyPlannerCommand({
+      type: "set-reaction-system",
+      reactionSystem: next,
+    });
+  }
+
+  function setLanguage(language: Language) {
+    applyPlannerCommand({ type: "set-language", language });
+  }
 
   const tr = useCallback(
     (zh: string, en: string) => (language === "zh" ? zh : en),
@@ -666,39 +521,7 @@ export function QpcrPlanner() {
     [completeGenes],
   );
 
-  const planInput: PlanInput = useMemo(
-    () => ({
-      plateType,
-      samples: sampleNames,
-      targetGenes,
-      referenceGenes,
-      replicates,
-    }),
-    [plateType, referenceGenes, replicates, sampleNames, targetGenes],
-  );
-
-  const currentSignature = useMemo(
-    () =>
-      experimentSignature(
-        plateType,
-        samples,
-        genes,
-        replicates,
-        layoutPreset,
-        loadingPattern,
-        fillDirection,
-      ),
-    [
-      fillDirection,
-      genes,
-      layoutPreset,
-      loadingPattern,
-      plateType,
-      replicates,
-      samples,
-    ],
-  );
-  const settingsStale = Boolean(layout && layoutSignature !== currentSignature);
+  const settingsStale = plannerSessionIsStale(plannerSession);
   const reactionWells =
     sampleNames.length * completeGenes.length * replicates;
   const effectiveBlocks =
@@ -806,25 +629,12 @@ export function QpcrPlanner() {
   ]);
 
   const audit = useMemo(
-    () =>
-      layout
-        ? validateLayout(layout, planInput)
-        : { valid: false, errors: [] as ValidationIssue[] },
-    [layout, planInput],
+    () => plannerSessionAudit(plannerSession),
+    [plannerSession],
   );
   const reactionCalculation = useMemo(
-    () =>
-      calculateReactionRequirements(
-        layout,
-        reactionSystem,
-        sampleNames,
-        completeGenes.map((gene) => ({
-          name: gene.name,
-          role: gene.role,
-        })),
-        blankSampleNames,
-      ),
-    [blankSampleNames, completeGenes, layout, reactionSystem, sampleNames],
+    () => plannerSessionReactionCalculation(plannerSession),
+    [plannerSession],
   );
 
   const activePlate = layout?.plates[activePlateIndex] ?? null;
@@ -846,240 +656,17 @@ export function QpcrPlanner() {
   useEffect(() => {
     const restoreTimer = window.setTimeout(() => {
       try {
-        const saved = window.localStorage.getItem(STORAGE_KEY);
-        if (saved) {
-          const parsed = JSON.parse(saved) as
-            | StoredPlannerState
-            | StoredPlannerStateV6
-            | StoredPlannerStateV5
-            | StoredPlannerStateV4
-            | StoredPlannerStateV3
-            | StoredPlannerStateV2
-            | StoredPlannerStateV1;
-          if (parsed.version === 1) {
-            const migratedSamples = migrateLegacySamples(parsed.samples);
-            const migratedPreset = inferredLayoutPreset(parsed.layout);
-            const migratedLoadingPattern: LoadingPattern = "sequential";
-            const migratedFillDirection: LayoutFillDirection = "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(migratedSamples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(migratedSamples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(migratedPreset);
-            setLoadingPattern(migratedLoadingPattern);
-            setFillDirection(migratedFillDirection);
-            setLayout(
-              withPlateNames(
-                parsed.layout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setAutomaticLayout(
-              withPlateNames(
-                parsed.automaticLayout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                migratedSamples,
-                parsed.genes,
-                parsed.replicates,
-                migratedPreset,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setConfirmed(parsed.confirmed);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
+        const restored = loadPlannerDraft(window.localStorage);
+        if (restored) {
+          replacePlannerSession(restored.session);
+          if (restored.ok) {
             setSavedAt("restored");
-          } else if (parsed.version === 2) {
-            const migratedPreset = inferredLayoutPreset(parsed.layout);
-            const migratedLoadingPattern: LoadingPattern = "sequential";
-            const migratedFillDirection: LayoutFillDirection = "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(migratedPreset);
-            setLoadingPattern(migratedLoadingPattern);
-            setFillDirection(migratedFillDirection);
-            setLayout(
-              withPlateNames(
-                parsed.layout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setAutomaticLayout(
-              withPlateNames(
-                parsed.automaticLayout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                parsed.samples,
-                parsed.genes,
-                parsed.replicates,
-                migratedPreset,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setConfirmed(parsed.confirmed);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
-          } else if (parsed.version === 3) {
-            const migratedLoadingPattern: LoadingPattern = "sequential";
-            const migratedFillDirection: LayoutFillDirection = "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(parsed.layoutPreset);
-            setLoadingPattern(migratedLoadingPattern);
-            setFillDirection(migratedFillDirection);
-            setLayout(
-              withPlateNames(
-                parsed.layout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setAutomaticLayout(
-              withPlateNames(
-                parsed.automaticLayout,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                parsed.samples,
-                parsed.genes,
-                parsed.replicates,
-                parsed.layoutPreset,
-                migratedLoadingPattern,
-                migratedFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setConfirmed(parsed.confirmed);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
-          } else if (
-            parsed.version === 4 ||
-            parsed.version === 5 ||
-            parsed.version === 6
-          ) {
-            const restoredFillDirection: LayoutFillDirection = "vertical";
-            const restoredLoadingPattern =
-              parsed.plateType === 96
-                ? "sequential"
-                : (parsed.loadingPattern ??
-                  defaultLoadingPattern(parsed.plateType));
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(parsed.layoutPreset);
-            setLoadingPattern(restoredLoadingPattern);
-            setFillDirection(restoredFillDirection);
-            setLayout(
-              withPlateNames(
-                parsed.layout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-            );
-            setAutomaticLayout(
-              withPlateNames(
-                parsed.automaticLayout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-            );
-            setLayoutSignature(
-              migrateLayoutSignature(
-                parsed.layoutSignature,
-                parsed.plateType,
-                parsed.samples,
-                parsed.genes,
-                parsed.replicates,
-                parsed.layoutPreset,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-            );
-            setGeneratedAt(parsed.generatedAt);
-            setConfirmed(parsed.confirmed);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
-          } else if (parsed.version === 7) {
-            const restoredLoadingPattern =
-              parsed.plateType === 96
-                ? "sequential"
-                : (parsed.loadingPattern ??
-                  defaultLoadingPattern(parsed.plateType));
-            const restoredFillDirection =
-              parsed.fillDirection ?? "vertical";
-            setPlateType(parsed.plateType);
-            setSamples(parsed.samples);
-            setGenes(parsed.genes);
-            replaceEntryHistory(parsed.samples, parsed.genes);
-            setReplicates(parsed.replicates);
-            setLayoutPreset(parsed.layoutPreset);
-            setLoadingPattern(restoredLoadingPattern);
-            setFillDirection(restoredFillDirection);
-            setLayout(
-              withPlateNames(
-                parsed.layout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-            );
-            setAutomaticLayout(
-              withPlateNames(
-                parsed.automaticLayout,
-                restoredLoadingPattern,
-                restoredFillDirection,
-              ),
-            );
-            setLayoutSignature(parsed.layoutSignature);
-            setGeneratedAt(parsed.generatedAt);
-            setConfirmed(parsed.confirmed);
-            setReactionSystem(
-              normalizeReactionSystemInput(parsed.reactionSystem),
-            );
-            setLanguage(parsed.language ?? "zh");
-            setSavedAt("restored");
+          } else {
+            setToast({
+              tone: "error",
+              message:
+                "未能恢复上次保存的方案，但不会影响新建布局。 / The saved plan could not be restored; a new plan can still be created.",
+            });
           }
         }
       } catch {
@@ -1119,40 +706,51 @@ export function QpcrPlanner() {
     setSavedAt("");
   }
 
-  function replaceEntryHistory(nextSamples: SampleEntry[], nextGenes: GeneEntry[]) {
-    setEntryHistory(
-      createEntryHistory({ samples: nextSamples, genes: nextGenes }),
-    );
+  function runPlateEdit(command: PlateEditCommand) {
+    if (!editingSession) return null;
+    const result = applyPlannerCommand({
+      type: "edit-plate",
+      command,
+    });
+    if (
+      result.outcome.status === "applied" ||
+      result.outcome.status === "undone" ||
+      result.outcome.status === "redone"
+    ) {
+      markChanged();
+    }
+    return result;
+  }
+
+  function runPlateEdits(commands: PlateEditCommand[]) {
+    if (!editingSession || commands.length === 0) return null;
+    const result = applyPlannerCommand({
+      type: "edit-plate-many",
+      commands,
+    });
+    if (["applied", "undone", "redone"].includes(result.outcome.status)) {
+      markChanged();
+    }
+    return result;
   }
 
   function commitEntrySnapshot(
     next: EntrySnapshot<SampleEntry, GeneEntry>,
   ) {
-    const syncedHistory = {
-      ...entryHistory,
-      present: { samples: [...samples], genes: [...genes] },
-    };
-    setEntryHistory(recordEntryState(syncedHistory, next));
-    setSamples(next.samples);
-    setGenes(next.genes);
+    applyPlannerCommand({
+      type: "commit-entries",
+      samples: next.samples,
+      genes: next.genes,
+    });
     markChanged();
   }
 
   function transitionEntries(
-    transition: (
-      history: EntryHistory<SampleEntry, GeneEntry>,
-    ) => EntryHistory<SampleEntry, GeneEntry>,
+    command: "undo-entries" | "redo-entries",
     message: string,
   ) {
-    const syncedHistory = {
-      ...entryHistory,
-      present: { samples: [...samples], genes: [...genes] },
-    };
-    const next = transition(syncedHistory);
-    if (next === syncedHistory) return false;
-    setEntryHistory(next);
-    setSamples(next.present.samples);
-    setGenes(next.present.genes);
+    const result = applyPlannerCommand({ type: command });
+    if (result.outcome.status === "noop") return false;
     markChanged();
     setToast({
       tone: "neutral",
@@ -1163,14 +761,14 @@ export function QpcrPlanner() {
 
   function undoEntries() {
     return transitionEntries(
-      undoEntryState,
+      "undo-entries",
       tr("已撤销上一次参数编辑。", "Undid the last setup edit."),
     );
   }
 
   function redoEntries() {
     return transitionEntries(
-      redoEntryState,
+      "redo-entries",
       tr("已重做参数编辑。", "Redid the setup edit."),
     );
   }
@@ -1421,27 +1019,26 @@ export function QpcrPlanner() {
       { id: makeId("gene"), name: "ZNF436", role: "target" },
       { id: makeId("gene"), name: "CHMP2A", role: "target" },
     ];
-    setPlateType(96);
-    setSamples(exampleSamples);
+    replacePlannerSession(
+      createPlannerSession({
+        plateType: 96,
+        samples: exampleSamples,
+        genes: exampleGenes,
+        replicates: 3,
+        layoutPreset: "gene-major",
+        loadingPattern: "sequential",
+        fillDirection: "vertical",
+        reactionSystem: plannerSessionRef.current.reactionSystem,
+        language: plannerSessionRef.current.language,
+      }),
+    );
     setSampleInput("");
     setSampleInputKind("sample");
     setSampleDraftOpen(false);
-    setGenes(exampleGenes);
-    replaceEntryHistory(exampleSamples, exampleGenes);
     setGeneInput("");
     setGeneInputRole("target");
     setGeneDraftOpen(false);
-    setReplicates(3);
-    setLayoutPreset("gene-major");
-    setLoadingPattern("sequential");
-    setFillDirection("vertical");
-    setLayout(null);
-    setAutomaticLayout(null);
-    setConfirmed({});
     setActivePlateIndex(0);
-    setSelectedWellIds([]);
-    setSelectionAnchorId(null);
-    setMoveMode(false);
     markChanged();
     setToast({
       tone: "neutral",
@@ -1471,35 +1068,27 @@ export function QpcrPlanner() {
       return;
     }
     try {
-      const next = planPlateLayout(planInput, {
-        strategy: layoutPreset,
-        loadingPattern,
-        fillDirection,
+      const result = applyPlannerCommand({
+        type: "generate-layout",
+        generatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
       });
-      const now = new Date().toLocaleString("zh-CN", { hour12: false });
-      setLayout(next);
-      setAutomaticLayout(clonePlan(next));
-      setLayoutSignature(currentSignature);
-      setGeneratedAt(now);
-      setConfirmed({});
-      setUndoStack([]);
-      setRedoStack([]);
+      if (result.outcome.status === "rejected") {
+        throw new Error(result.outcome.message ?? "Unable to generate layout");
+      }
+      const plateCount = result.session.plateEditing?.plan.plates.length ?? 0;
       setActivePlateIndex(0);
-      setSelectedWellIds([]);
-      setSelectionAnchorId(null);
-      setMoveMode(false);
       markChanged();
       setToast({
         tone: "success",
         message:
           layoutPreset === "gene-major"
             ? tr(
-                `已按基因排列生成 ${next.plates.length} 块 ${plateType} 孔板；每个基因内保持样本输入顺序。`,
-                `Generated ${next.plates.length} ${plateType}-well plate(s) by assay; sample input order is preserved within every assay.`,
+                `已按基因排列生成 ${plateCount} 块 ${plateType} 孔板；每个基因内保持样本输入顺序。`,
+                `Generated ${plateCount} ${plateType}-well plate(s) by assay; sample input order is preserved within every assay.`,
               )
             : tr(
-                `已按样本排列生成 ${next.plates.length} 块 ${plateType} 孔板；目的基因跨板时会重新安排该样本的全部内参。`,
-                `Generated ${next.plates.length} ${plateType}-well plate(s) by sample; all references are rerun whenever a sample's targets continue onto another plate.`,
+                `已按样本排列生成 ${plateCount} 块 ${plateType} 孔板；目的基因跨板时会重新安排该样本的全部内参。`,
+                `Generated ${plateCount} ${plateType}-well plate(s) by sample; all references are rerun whenever a sample's targets continue onto another plate.`,
               ),
       });
     } catch (error) {
@@ -1513,86 +1102,17 @@ export function QpcrPlanner() {
     }
   }
 
-  function commitLayout(next: PlanResult, plateNumber?: number) {
-    if (!layout) return;
-    setUndoStack((stack) => [...stack.slice(-29), clonePlan(layout)]);
-    setRedoStack([]);
-    setLayout(refreshPlanDerivedData(next, planInput));
-    if (plateNumber !== undefined) {
-      setConfirmed((current) => ({
-        ...current,
-        [String(plateNumber)]: false,
-      }));
-    } else {
-      setConfirmed({});
-    }
-    markChanged();
-  }
-
   function undoLayout() {
-    if (!layout || undoStack.length === 0) return;
-    const previous = undoStack[undoStack.length - 1];
-    setRedoStack((stack) => [...stack, clonePlan(layout)]);
-    setUndoStack((stack) => stack.slice(0, -1));
-    setLayout(clonePlan(previous));
-    setConfirmed({});
-    markChanged();
+    runPlateEdit({ type: "undo" });
   }
 
   function redoLayout() {
-    if (!layout || redoStack.length === 0) return;
-    const next = redoStack[redoStack.length - 1];
-    setUndoStack((stack) => [...stack, clonePlan(layout)]);
-    setRedoStack((stack) => stack.slice(0, -1));
-    setLayout(clonePlan(next));
-    setConfirmed({});
-    markChanged();
+    runPlateEdit({ type: "redo" });
   }
 
-  useEffect(() => {
-    const handleKeyboard = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") {
-        return;
-      }
-      const activeElement = document.activeElement;
-      if (
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement ||
-        activeElement instanceof HTMLSelectElement
-      ) {
-        return;
-      }
-      event.preventDefault();
-      if (event.shiftKey) {
-        if (!redoEntries() && redoStack.length > 0) redoLayout();
-      } else if (!undoEntries() && undoStack.length > 0) {
-        undoLayout();
-      }
-    };
-    window.addEventListener("keydown", handleKeyboard);
-    return () => window.removeEventListener("keydown", handleKeyboard);
-  });
-
   function savePlanner() {
-    const payload: StoredPlannerState = {
-      version: 7,
-      plateType,
-      samples,
-      genes,
-      replicates,
-      layoutPreset,
-      loadingPattern,
-      fillDirection,
-      layout,
-      automaticLayout,
-      layoutSignature,
-      generatedAt,
-      confirmed,
-      reactionSystem,
-      language,
-    };
     try {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+      savePlannerDraft(window.localStorage, plannerSession);
       const time = new Date().toLocaleTimeString("zh-CN", {
         hour: "2-digit",
         minute: "2-digit",
@@ -1631,7 +1151,7 @@ export function QpcrPlanner() {
     }
 
     try {
-      window.localStorage.removeItem(STORAGE_KEY);
+      clearPlannerDraft(window.localStorage);
     } catch {
       setToast({
         tone: "error",
@@ -1643,16 +1163,9 @@ export function QpcrPlanner() {
       return;
     }
 
-    setPlateType(96);
-    setSamples([]);
-    setGenes([]);
-    replaceEntryHistory([], []);
+    applyPlannerCommand({ type: "reset" });
     setDraggedEntry(null);
     setDropTarget(null);
-    setReplicates(3);
-    setLayoutPreset("gene-major");
-    setLoadingPattern("sequential");
-    setFillDirection("vertical");
     setSampleInput("");
     setSampleInputKind("sample");
     setSampleDraftOpen(false);
@@ -1663,21 +1176,10 @@ export function QpcrPlanner() {
     setGenePaste("");
     setSampleQuickCount("");
     setGeneQuickCount("");
-    setLayout(null);
-    setAutomaticLayout(null);
-    setLayoutSignature("");
-    setGeneratedAt("");
     setActivePlateIndex(0);
-    setConfirmed({});
-    setUndoStack([]);
-    setRedoStack([]);
     setEditor(null);
-    setSelectedWellIds([]);
-    setSelectionAnchorId(null);
-    setMoveMode(false);
     setEditingPlateName(false);
     setPlateNameDraft("");
-    setReactionSystem({ ...DEFAULT_REACTION_SYSTEM });
     setSavedAt("");
     setDirty(false);
     setToast({
@@ -1723,34 +1225,37 @@ export function QpcrPlanner() {
     }
     const additive = event.metaKey || event.ctrlKey;
     if (event.shiftKey && selectionAnchorId) {
-      const range = rectangularWellIds(
-        plate,
-        selectionAnchorId,
-        well.wellId,
-      );
-      setSelectedWellIds((current) =>
-        additive ? Array.from(new Set([...current, ...range])) : range,
-      );
+      runPlateEdit({
+        type: "select-range",
+        plateNumber: plate.plateNumber,
+        anchorWellId: selectionAnchorId,
+        endWellId: well.wellId,
+        mode: additive ? "add" : "replace",
+      });
       return;
     }
-    if (additive) {
-      setSelectedWellIds((current) =>
-        current.includes(well.wellId)
-          ? current.filter((wellId) => wellId !== well.wellId)
-          : [...current, well.wellId],
-      );
-      setSelectionAnchorId(well.wellId);
-      return;
-    }
-    setSelectedWellIds([well.wellId]);
-    setSelectionAnchorId(well.wellId);
+    runPlateEdit({
+      type: "select",
+      plateNumber: plate.plateNumber,
+      wellIds: [well.wellId],
+      mode: additive ? "toggle" : "replace",
+      anchorWellId: well.wellId,
+    });
   }
 
   function boxPointerPosition(event: ReactPointerEvent<HTMLDivElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
+    const unscaledWidth = bounds.width / plateZoom;
+    const unscaledHeight = bounds.height / plateZoom;
     return {
-      x: Math.max(0, Math.min(bounds.width, event.clientX - bounds.left)),
-      y: Math.max(0, Math.min(bounds.height, event.clientY - bounds.top)),
+      x: Math.max(
+        0,
+        Math.min(unscaledWidth, (event.clientX - bounds.left) / plateZoom),
+      ),
+      y: Math.max(
+        0,
+        Math.min(unscaledHeight, (event.clientY - bounds.top) / plateZoom),
+      ),
     };
   }
 
@@ -1786,7 +1291,7 @@ export function QpcrPlanner() {
       anchorWellId,
       endWellId: anchorWellId,
       baseWellIds: [...selectedWellIds],
-      mode: event.metaKey || event.ctrlKey ? "toggle" : "replace",
+      mode: event.metaKey || event.ctrlKey ? "add" : "replace",
       startX: position.x,
       startY: position.y,
       currentX: position.x,
@@ -1826,15 +1331,14 @@ export function QpcrPlanner() {
     if (!active) return;
 
     event.preventDefault();
-    const boxedWellIds = rectangularWellIds(
-      plate,
-      next.anchorWellId,
-      next.endWellId,
-    );
-    setSelectedWellIds(
-      applyBoxSelection(next.baseWellIds, boxedWellIds, next.mode),
-    );
-    setSelectionAnchorId(next.endWellId);
+    runPlateEdit({
+      type: "select-range",
+      plateNumber: plate.plateNumber,
+      anchorWellId: next.anchorWellId,
+      endWellId: next.endWellId,
+      mode: next.mode,
+      baseWellIds: next.baseWellIds,
+    });
   }
 
   function finishBoxSelection(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1869,24 +1373,26 @@ export function QpcrPlanner() {
       });
       return;
     }
-    const next = clonePlan(layout);
-    const plate = next.plates[editor.plateIndex];
+    const plate = layout.plates[editor.plateIndex];
     const selectedGene = completeGenes.find(
       (gene) => gene.name === editor.gene,
     );
-    next.plates[editor.plateIndex] = assignSelectedWells(
-      plate,
-      editor.wellIds,
+    runPlateEdits([
       {
-        sample: editor.mode === "assay" ? editor.sample : null,
-        gene: editor.mode === "assay" ? editor.gene : null,
-        geneType:
-          editor.mode === "assay"
-            ? ((selectedGene?.role ?? "target") as GeneType)
-            : null,
+        type: "select",
+        plateNumber: plate.plateNumber,
+        wellIds: editor.wellIds,
+        mode: "replace",
       },
-    );
-    commitLayout(next, plate.plateNumber);
+      editor.mode === "assay"
+        ? {
+            type: "assign",
+            sample: editor.sample,
+            gene: editor.gene,
+            geneType: (selectedGene?.role ?? "target") as GeneType,
+          }
+        : { type: "clear" },
+    ]);
     setEditor(null);
     setToast({
       tone: "neutral",
@@ -1899,18 +1405,143 @@ export function QpcrPlanner() {
 
   function clearSelectedWells() {
     if (!layout || !activePlate || selectedWellIds.length === 0) return;
-    const next = clonePlan(layout);
-    next.plates[activePlateIndex] = assignSelectedWells(
-      next.plates[activePlateIndex],
-      selectedWellIds,
-      { sample: null, gene: null, geneType: null },
-    );
-    commitLayout(next, activePlate.plateNumber);
+    runPlateEdit({ type: "clear" });
     setToast({
       tone: "neutral",
       message: tr(
         `已清空 ${selectedWellIds.length} 个所选孔。`,
         `Cleared ${selectedWellIds.length} selected well(s).`,
+      ),
+    });
+  }
+
+  function copySelection() {
+    if (!activePlate || selectedWellIds.length === 0) return false;
+    const copied = runPlateEdit({ type: "copy" });
+    if (!copied || copied.outcome.status !== "copied") return false;
+    setToast({
+      tone: "neutral",
+      message: tr(
+        `已复制 ${selectedWellIds.length} 个孔；选择目标起始孔后粘贴。`,
+        `Copied ${selectedWellIds.length} well(s); select a destination anchor to paste.`,
+      ),
+    });
+    return true;
+  }
+
+  function pasteSelection() {
+    if (
+      !layout ||
+      !activePlate ||
+      !wellClipboard ||
+      activePlateConfirmed ||
+      settingsStale
+    ) {
+      return false;
+    }
+    const destinationWellId = selectionAnchorId ?? selectedWellIds[0];
+    if (!destinationWellId) {
+      setToast({
+        tone: "error",
+        message: tr(
+          "请先选择粘贴区域的起始孔。",
+          "Select the destination anchor well first.",
+        ),
+      });
+      return false;
+    }
+    let pasted = runPlateEdit({
+      type: "paste",
+      plateNumber: activePlate.plateNumber,
+      destinationWellId,
+    });
+    if (pasted?.outcome.status === "conflict") {
+      const overwrite = window.confirm(
+        tr(
+          `目标区域已有 ${pasted.outcome.wellIds?.length ?? 0} 个占用孔。是否覆盖？`,
+          `The destination contains ${pasted.outcome.wellIds?.length ?? 0} occupied well(s). Overwrite them?`,
+        ),
+      );
+      if (!overwrite) return false;
+      pasted = runPlateEdit({
+        type: "paste",
+        plateNumber: activePlate.plateNumber,
+        destinationWellId,
+        allowOverwrite: true,
+      });
+    }
+    if (!pasted || pasted.outcome.status !== "applied") {
+      setToast({
+        tone: "error",
+        message: tr(
+          "复制区域粘贴后会超出孔板边界。",
+          "The copied block would exceed the plate boundary.",
+        ),
+      });
+      return false;
+    }
+    const pastedCount = pasted.outcome.wellIds?.length ?? 0;
+    setToast({
+      tone: "neutral",
+      message: tr(
+        `已粘贴 ${pastedCount} 个孔；用量已按当前布局重算。`,
+        `Pasted ${pastedCount} well(s); requirements were recalculated.`,
+      ),
+    });
+    return true;
+  }
+
+  useEffect(() => {
+    const handleKeyboard = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) {
+        return;
+      }
+      const activeElement = document.activeElement;
+      if (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        activeElement instanceof HTMLSelectElement
+      ) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      if (key === "c" && selectedWellIds.length > 0) {
+        event.preventDefault();
+        copySelection();
+        return;
+      }
+      if (key === "v" && wellClipboard) {
+        event.preventDefault();
+        pasteSelection();
+        return;
+      }
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          if (!redoEntries() && redoStack.length > 0) redoLayout();
+        } else if (!undoEntries() && undoStack.length > 0) {
+          undoLayout();
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  });
+
+  function restoreSelectedFromAutomatic() {
+    if (
+      !layout ||
+      !activePlate ||
+      selectedWellIds.length === 0
+    ) {
+      return;
+    }
+    runPlateEdit({ type: "restore-selected" });
+    setToast({
+      tone: "success",
+      message: tr(
+        `已恢复 ${selectedWellIds.length} 个所选孔的生成值。`,
+        `Restored generated values for ${selectedWellIds.length} selected well(s).`,
       ),
     });
   }
@@ -1921,34 +1552,34 @@ export function QpcrPlanner() {
     destinationWellId: string,
   ) {
     if (!layout || selectedWellIds.length === 0) return;
-    let result = translateSelectedWells(
-      plate,
-      selectedWellIds,
+    let result = runPlateEdit({
+      type: "move",
+      plateNumber: plate.plateNumber,
       destinationWellId,
-    );
-    if (result.ok === false && result.reason === "collision") {
+    });
+    if (result?.outcome.status === "conflict") {
       const confirmedOverwrite = window.confirm(
         tr(
-          `目标区域已有 ${result.collisionWellIds?.length ?? 0} 个占用孔。是否覆盖？`,
-          `The destination contains ${result.collisionWellIds?.length ?? 0} occupied well(s). Overwrite them?`,
+          `目标区域已有 ${result.outcome.wellIds?.length ?? 0} 个占用孔。是否覆盖？`,
+          `The destination contains ${result.outcome.wellIds?.length ?? 0} occupied well(s). Overwrite them?`,
         ),
       );
       if (!confirmedOverwrite) {
-        setMoveMode(false);
+        runPlateEdit({ type: "set-move-mode", enabled: false });
         return;
       }
-      result = translateSelectedWells(
-        plate,
-        selectedWellIds,
+      result = runPlateEdit({
+        type: "move",
+        plateNumber: plate.plateNumber,
         destinationWellId,
-        true,
-      );
+        allowOverwrite: true,
+      });
     }
-    if (result.ok === false) {
+    if (!result || result.outcome.status !== "applied") {
       setToast({
         tone: "error",
         message:
-          result.reason === "out-of-bounds"
+          result?.outcome.reason === "out-of-bounds"
             ? tr(
                 "所选孔平移后会超出孔板边界。",
                 "The translated selection would exceed the plate boundary.",
@@ -1958,39 +1589,24 @@ export function QpcrPlanner() {
                 "The selection has no occupied wells to move.",
               ),
       });
-      setMoveMode(false);
+      runPlateEdit({ type: "set-move-mode", enabled: false });
       return;
     }
-    const next = clonePlan(layout);
-    next.plates[plateIndex] = result.plate;
-    commitLayout(next, plate.plateNumber);
-    setSelectedWellIds(result.movedWellIds);
-    setSelectionAnchorId(result.movedWellIds[0] ?? null);
-    setMoveMode(false);
     setToast({
       tone: "neutral",
       message: tr(
-        `已平移 ${result.movedWellIds.length} 个孔位。`,
-        `Moved ${result.movedWellIds.length} well(s).`,
+        `已平移 ${result.outcome.wellIds?.length ?? 0} 个孔位。`,
+        `Moved ${result.outcome.wellIds?.length ?? 0} well(s).`,
       ),
     });
   }
 
   function restoreActivePlate() {
-    if (!layout || !automaticLayout || !activePlate) return;
-    const source = automaticLayout.plates.find(
-      (plate) => plate.plateNumber === activePlate.plateNumber,
-    );
-    if (!source) return;
-    const next = clonePlan(layout);
-    next.plates[activePlateIndex] = {
-      ...clonePlan(source),
-      name: activePlate.name,
-    };
-    commitLayout(next, activePlate.plateNumber);
-    setSelectedWellIds([]);
-    setSelectionAnchorId(null);
-    setMoveMode(false);
+    if (!layout || !activePlate) return;
+    runPlateEdit({
+      type: "restore-plate",
+      plateNumber: activePlate.plateNumber,
+    });
     setToast({
       tone: "success",
       message: tr(
@@ -2026,9 +1642,11 @@ export function QpcrPlanner() {
       return;
     }
     if (nextName !== activePlate.name) {
-      const next = clonePlan(layout);
-      next.plates[activePlateIndex].name = nextName;
-      commitLayout(next, activePlate.plateNumber);
+      runPlateEdit({
+        type: "rename-plate",
+        plateNumber: activePlate.plateNumber,
+        name: nextName,
+      });
       setToast({
         tone: "success",
         message: tr(
@@ -2044,7 +1662,11 @@ export function QpcrPlanner() {
     if (!activePlate) return;
     const key = String(activePlate.plateNumber);
     if (confirmed[key]) {
-      setConfirmed((current) => ({ ...current, [key]: false }));
+      runPlateEdit({
+        type: "set-confirmed",
+        plateNumber: activePlate.plateNumber,
+        confirmed: false,
+      });
       markChanged();
       return;
     }
@@ -2058,7 +1680,11 @@ export function QpcrPlanner() {
       });
       return;
     }
-    setConfirmed((current) => ({ ...current, [key]: true }));
+    runPlateEdit({
+      type: "set-confirmed",
+      plateNumber: activePlate.plateNumber,
+      confirmed: true,
+    });
     markChanged();
     const advisoryCount =
       issuesForPlate(activePlate).length + globalIssues.length;
@@ -3568,9 +3194,15 @@ export function QpcrPlanner() {
                       key={plate.id}
                       onClick={() => {
                         setActivePlateIndex(index);
-                        setSelectedWellIds([]);
-                        setSelectionAnchorId(null);
-                        setMoveMode(false);
+                        runPlateEdits([
+                          {
+                            type: "select",
+                            plateNumber: plate.plateNumber,
+                            wellIds: [],
+                            mode: "replace",
+                          },
+                          { type: "set-move-mode", enabled: false },
+                        ]);
                         setEditingPlateName(false);
                       }}
                       aria-current={activePlateIndex === index ? "page" : undefined}
@@ -3661,26 +3293,40 @@ export function QpcrPlanner() {
                           {currentStatus.label}
                         </span>
                       </div>
-                      <p className="plate-subtitle">
-                        {tr(
-                          `板号 ${String(activePlate.plateNumber).padStart(
-                            2,
-                            "0",
-                          )} · ${plateType} 孔 · 已使用 ${
-                            activePlate.wells.filter(
-                              (well) => well.sample && well.gene,
-                            ).length
-                          } / ${plateType} · ${activePlate.sampleNames.join("、")}`,
-                          `Plate ID ${String(activePlate.plateNumber).padStart(
-                            2,
-                            "0",
-                          )} · ${plateType}-well · ${
-                            activePlate.wells.filter(
-                              (well) => well.sample && well.gene,
-                            ).length
-                          } / ${plateType} used · ${activePlate.sampleNames.join(", ")}`,
+                      <div className="plate-subtitle">
+                        <span>
+                          {tr(
+                            `板号 ${String(activePlate.plateNumber).padStart(
+                              2,
+                              "0",
+                            )} · ${plateType} 孔 · 已使用 ${
+                              activePlate.wells.filter(
+                                (well) => well.sample && well.gene,
+                              ).length
+                            } / ${plateType} · ${activePlate.sampleNames.length} 个样本`,
+                            `Plate ID ${String(activePlate.plateNumber).padStart(
+                              2,
+                              "0",
+                            )} · ${plateType}-well · ${
+                              activePlate.wells.filter(
+                                (well) => well.sample && well.gene,
+                              ).length
+                            } / ${plateType} used · ${activePlate.sampleNames.length} samples`,
+                          )}
+                        </span>
+                        {activePlate.sampleNames.length > 0 && (
+                          <details className="plate-sample-details">
+                            <summary>
+                              {tr("查看样本", "View samples")}
+                            </summary>
+                            <span>
+                              {activePlate.sampleNames.join(
+                                language === "zh" ? "、" : ", ",
+                              )}
+                            </span>
+                          </details>
                         )}
-                      </p>
+                      </div>
                     </div>
                     <div className="plate-actions">
                       <button
@@ -3822,6 +3468,37 @@ export function QpcrPlanner() {
                       <button
                         className="button button-quiet"
                         type="button"
+                        onClick={copySelection}
+                        disabled={selectedWellIds.length === 0}
+                        title={tr(
+                          "复制所选孔（⌘/Ctrl + C）",
+                          "Copy selected wells (⌘/Ctrl + C)",
+                        )}
+                      >
+                        <Copy size={13} />
+                        {tr("复制", "Copy")}
+                      </button>
+                      <button
+                        className="button button-quiet"
+                        type="button"
+                        onClick={pasteSelection}
+                        disabled={
+                          !wellClipboard ||
+                          selectedWellIds.length === 0 ||
+                          activePlateConfirmed ||
+                          settingsStale
+                        }
+                        title={tr(
+                          "粘贴到所选起始孔（⌘/Ctrl + V）",
+                          "Paste at selected anchor (⌘/Ctrl + V)",
+                        )}
+                      >
+                        <ClipboardPaste size={13} />
+                        {tr("粘贴", "Paste")}
+                      </button>
+                      <button
+                        className="button button-quiet"
+                        type="button"
                         onClick={undoLayout}
                         disabled={undoStack.length === 0}
                         title={tr(
@@ -3865,6 +3542,25 @@ export function QpcrPlanner() {
                         {tr("编辑", "Edit")}
                       </button>
                       <button
+                        className="button button-quiet"
+                        type="button"
+                        disabled={
+                          selectedWellIds.length === 0 ||
+                          activePlateConfirmed ||
+                          settingsStale ||
+                          !selectedWellIds.some(
+                            (wellId) =>
+                              activePlate.wells.find(
+                                (well) => well.wellId === wellId,
+                              )?.source === "manual",
+                          )
+                        }
+                        onClick={restoreSelectedFromAutomatic}
+                      >
+                        <RotateCcw size={13} />
+                        {tr("恢复所选", "Restore selected")}
+                      </button>
+                      <button
                         className={`button button-quiet ${
                           moveMode ? "active" : ""
                         }`}
@@ -3874,7 +3570,12 @@ export function QpcrPlanner() {
                           activePlateConfirmed ||
                           settingsStale
                         }
-                        onClick={() => setMoveMode((current) => !current)}
+                        onClick={() =>
+                          runPlateEdit({
+                            type: "set-move-mode",
+                            enabled: !moveMode,
+                          })
+                        }
                       >
                         <Move size={13} />
                         {moveMode
@@ -3899,15 +3600,67 @@ export function QpcrPlanner() {
                           className="icon-button"
                           type="button"
                           onClick={() => {
-                            setSelectedWellIds([]);
-                            setSelectionAnchorId(null);
-                            setMoveMode(false);
+                            runPlateEdits([
+                              {
+                                type: "select",
+                                plateNumber: activePlate.plateNumber,
+                                wellIds: [],
+                                mode: "replace",
+                              },
+                              { type: "set-move-mode", enabled: false },
+                            ]);
                           }}
                           aria-label={tr("取消选择", "Clear selection")}
                         >
                           <X size={14} />
                         </button>
                       )}
+                      <span
+                        className="zoom-controls"
+                        role="group"
+                        aria-label={tr("孔板视图缩放", "Plate view zoom")}
+                      >
+                        <button
+                          className="icon-button"
+                          type="button"
+                          disabled={plateZoom <= 0.5}
+                          onClick={() =>
+                            setPlateZoom((value) =>
+                              Math.max(
+                                0.5,
+                                Number((value - 0.1).toFixed(1)),
+                              ),
+                            )
+                          }
+                          aria-label={tr("缩小孔板", "Zoom out")}
+                        >
+                          <ZoomOut size={14} />
+                        </button>
+                        <button
+                          className="zoom-value"
+                          type="button"
+                          onClick={() => setPlateZoom(1)}
+                          title={tr("恢复 100%", "Reset to 100%")}
+                        >
+                          {Math.round(plateZoom * 100)}%
+                        </button>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          disabled={plateZoom >= 1.3}
+                          onClick={() =>
+                            setPlateZoom((value) =>
+                              Math.min(
+                                1.3,
+                                Number((value + 0.1).toFixed(1)),
+                              ),
+                            )
+                          }
+                          aria-label={tr("放大孔板", "Zoom in")}
+                        >
+                          <ZoomIn size={14} />
+                        </button>
+                      </span>
                     </div>
                   </div>
 
@@ -3921,6 +3674,7 @@ export function QpcrPlanner() {
                       style={
                         {
                           "--plate-columns": activePlate.columns,
+                          zoom: plateZoom,
                         } as CSSProperties
                       }
                       role="grid"
@@ -4084,8 +3838,13 @@ export function QpcrPlanner() {
                                     )
                                   }
                                   onDoubleClick={() => {
-                                    setSelectedWellIds([well.wellId]);
-                                    setSelectionAnchorId(well.wellId);
+                                    runPlateEdit({
+                                      type: "select",
+                                      plateNumber: activePlate.plateNumber,
+                                      wellIds: [well.wellId],
+                                      mode: "replace",
+                                      anchorWellId: well.wellId,
+                                    });
                                     openEditorForSelection(
                                       activePlateIndex,
                                       activePlate,

@@ -82,3 +82,25 @@ test("declares the conditional plate box-selection affordance", async () => {
   assert.match(source, /拖动框选/);
   assert.match(source, /className="well-selection-box"/);
 });
+
+test("declares plate copy, paste, restore, and zoom editing affordances", async () => {
+  const [source, styles] = await Promise.all([
+    readFile(new URL("../app/QpcrPlanner.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(source, /复制所选孔（⌘\/Ctrl \+ C）/);
+  assert.match(source, /粘贴到所选起始孔（⌘\/Ctrl \+ V）/);
+  assert.match(source, /恢复所选/);
+  assert.match(source, /孔板视图缩放/);
+  assert.match(styles, /\.selection-toolbar\s*\{[^}]*position:\s*sticky/s);
+});
+
+test("keeps long plate sample lists collapsed behind a compact summary", async () => {
+  const source = await readFile(
+    new URL("../app/QpcrPlanner.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /activePlate\.sampleNames\.length} 个样本/);
+  assert.match(source, /className="plate-sample-details"/);
+  assert.match(source, /查看样本/);
+});
