@@ -14,14 +14,12 @@
     "test": "npm run test:unit && npm run build && node --test tests/rendered-html.test.mjs && npm run test:portable",
     "test:unit": "tsx --test tests/*.test.ts",
     "test:portable": "npm run build:portable && node --test tests/portable-html.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
   },
   "dependencies": {
-    "drizzle-orm": "0.45.2",
     "jszip": "^3.10.1",
     "lucide-react": "^1.28.0",
-    "next": "16.2.6",
+    "next": "16.3.5",
     "react": "19.2.6",
     "react-dom": "19.2.6",
     "xlsx-js-style": "^1.2.0"
@@ -34,7 +32,6 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
-    "drizzle-kit": "0.31.10",
     "esbuild": "0.28.0",
     "eslint": "9.39.4",
     "eslint-config-next": "16.2.6",

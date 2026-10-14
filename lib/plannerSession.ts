@@ -12,6 +12,7 @@ import {
   type LayoutFillDirection,
   type LayoutPreset,
   type LoadingPattern,
+  type LoadingUnit,
   type PlanInput,
   type PlanResult,
   type PlateType,
@@ -40,6 +41,7 @@ export interface SampleEntry {
   id: string;
   name: string;
   kind: SampleKind;
+  loadingGroup?: string;
   cellLine?: string;
   comparisonGroup?: string;
   isBridge?: boolean;
@@ -52,6 +54,7 @@ export interface GeneEntry {
 }
 
 export interface ExperimentSetup {
+  loadingUnit?: LoadingUnit;
   plateType: PlateType;
   samples: SampleEntry[];
   genes: GeneEntry[];
@@ -72,6 +75,7 @@ export interface PlannerSession {
 }
 
 export interface CreatePlannerSessionInput {
+  loadingUnit?: LoadingUnit;
   plateType?: PlateType;
   samples?: SampleEntry[];
   genes?: GeneEntry[];
@@ -184,6 +188,7 @@ export function plannerSessionPlanInput(setup: ExperimentSetup): PlanInput {
       .map((sample) => ({
         name: sample.name.trim(),
         kind: sample.kind,
+        loadingGroup: sample.loadingGroup?.trim(),
         cellLine: sample.cellLine?.trim(),
         comparisonGroup: sample.comparisonGroup?.trim(),
         isBridge: Boolean(sample.isBridge),
@@ -202,12 +207,13 @@ export function plannerSessionSignature(setup: ExperimentSetup) {
   return JSON.stringify({
     plateType: setup.plateType,
     samples: setup.samples.map(
-      ({ name, kind, cellLine, comparisonGroup, isBridge }) => ({
+      ({ name, kind, cellLine, comparisonGroup, isBridge, loadingGroup }) => ({
         name,
         kind,
         cellLine: cellLine ?? "",
         comparisonGroup: comparisonGroup ?? "",
         isBridge: Boolean(isBridge),
+        ...(loadingGroup?.trim() ? { loadingGroup: loadingGroup.trim() } : {}),
       }),
     ),
     genes: setup.genes.map(({ name, role }) => ({ name, role })),
@@ -215,6 +221,7 @@ export function plannerSessionSignature(setup: ExperimentSetup) {
     layoutPreset: setup.layoutPreset,
     loadingPattern: setup.loadingPattern,
     fillDirection: setup.fillDirection,
+    ...(setup.loadingUnit === "eight-strip" ? { loadingUnit: setup.loadingUnit } : {}),
   });
 }
 
@@ -294,6 +301,7 @@ export function createPlannerSession(
   const plateType = input.plateType ?? 96;
   return {
     setup: {
+      loadingUnit: input.loadingUnit ?? "eight-strip",
       plateType,
       samples: input.samples ?? [],
       genes: input.genes ?? [],
@@ -435,6 +443,7 @@ export function dispatchPlannerSession(
       const planInput = plannerSessionPlanInput(session.setup);
       const plan = planPlateLayout(planInput, {
         strategy: session.setup.layoutPreset,
+        loadingUnit: session.setup.loadingUnit ?? "well",
         loadingPattern: session.setup.loadingPattern,
         fillDirection: session.setup.fillDirection,
       });
@@ -521,6 +530,7 @@ function restoreCurrent(
   }));
   const session = createPlannerSession({
     ...raw.setup,
+    loadingUnit: raw.setup.loadingUnit ?? "well",
     samples,
     reactionSystem: raw.reactionSystem,
     language: raw.language,
@@ -572,6 +582,7 @@ function restoreLegacy(
   const fillDirection =
     raw.version <= 6 ? "vertical" : (raw.fillDirection ?? "vertical");
   const setup: ExperimentSetup = {
+    loadingUnit: "well",
     plateType: raw.plateType,
     samples,
     genes: raw.genes,

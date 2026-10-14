@@ -20,6 +20,10 @@ _Avoid_: Original layout, backup layout
 A well whose assignment or empty state was explicitly changed within a Plate Editing Session. It remains manual until restored from the Generated Baseline.
 _Avoid_: Custom hole, edited cell
 
+**Manual Well Patch**:
+The smallest reversible change recorded for manual editing: only the affected well assignments and plate names, together with their before and after values. Derived counts and validation results are recalculated rather than stored in the patch.
+_Avoid_: Full plan snapshot, backup plate
+
 **Planner Session**:
 One in-progress qPCR planning workspace, including the experiment setup, current Plate Editing Session, reaction setup, language preference, and layout generation provenance. Transient view controls are not part of it.
 _Avoid_: App state, stored state, planner payload

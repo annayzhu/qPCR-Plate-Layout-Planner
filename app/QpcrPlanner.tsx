@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   Beaker,
+  Calculator,
   Check,
   ChevronDown,
   ChevronUp,
@@ -26,8 +27,6 @@ import {
   Trash2,
   Undo2,
   X,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
 import {
   type CSSProperties,
@@ -35,7 +34,6 @@ import {
   Fragment,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type SetStateAction,
   useCallback,
@@ -56,6 +54,7 @@ import {
   type EntrySnapshot,
 } from "@/lib/entryHistory";
 import { type ReactionSystemInput } from "@/lib/reactionCalculator";
+import { buildLoadingStrips } from "@/lib/loadingStrips";
 import {
   generateNumberedEntries,
   MAX_QUICK_ENTRY_COUNT,
@@ -95,6 +94,7 @@ import {
   type PlateType,
 } from "@/lib/platePlanner";
 import { ReactionCalculator } from "@/app/ReactionCalculator";
+import { PlateViewport } from "@/app/PlateViewport";
 
 type Language = PlannerLanguage;
 
@@ -118,18 +118,6 @@ interface DraggedEntry {
   id: string;
 }
 
-interface BoxSelectionState {
-  pointerId: number;
-  anchorWellId: string;
-  endWellId: string;
-  baseWellIds: string[];
-  mode: "replace" | "add";
-  startX: number;
-  startY: number;
-  currentX: number;
-  currentY: number;
-  active: boolean;
-}
 
 interface SortableEntryRowProps {
   entry: DraggedEntry;
@@ -236,6 +224,7 @@ function SortableEntryRow({
   );
 }
 
+
 const TARGET_PALETTE = [
   { background: "#DDE8F2", text: "#29465E" },
   { background: "#DCEBE8", text: "#26564F" },
@@ -316,8 +305,17 @@ function wellVisual(
   } as CSSProperties;
 }
 
-function shortLabel(value: string, max: number) {
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+function describePlateWell(well: PlannerWell, blank: boolean, language: Language) {
+  const tr = (zh: string, en: string) => language === "zh" ? zh : en;
+  const manual = well.source === "manual" ? tr("，手动修改", ", manually edited") : "";
+  if (!well.sample || !well.gene) return tr(`${well.wellId}，空孔${manual}`, `${well.wellId}, empty${manual}`);
+  const kind = blank ? "Blank" : tr("样本", "sample");
+  const role = well.geneType === "reference" ? tr("内参", "reference") : tr("目的基因", "target");
+  const bridge = well.isBridge ? tr("，桥接样本", ", bridge sample") : "";
+  return tr(
+    `${well.wellId}，${kind} ${well.sample}，基因 ${well.gene}，${role}，复孔 ${well.replicateIndex ?? "—"}${manual}${bridge}`,
+    `${well.wellId}, ${kind} ${well.sample}, assay ${well.gene}, ${role}, replicate ${well.replicateIndex ?? "—"}${manual}${bridge}`,
+  );
 }
 
 function plateStatus(
@@ -360,15 +358,13 @@ export function QpcrPlanner() {
   const [selectedSampleIds, setSelectedSampleIds] = useState<string[]>([]);
   const [bulkCellLine, setBulkCellLine] = useState("");
   const [bulkComparisonGroup, setBulkComparisonGroup] = useState("");
+  const [loadingGroupDraft, setLoadingGroupDraft] = useState("");
+  const [showComparisonFields, setShowComparisonFields] = useState(false);
   const entryEditStartRef = useRef<EntrySnapshot<SampleEntry, GeneEntry> | null>(null);
   const [geneQuickCount, setGeneQuickCount] = useState("");
   const [activePlateIndex, setActivePlateIndex] = useState(0);
   const [editor, setEditor] = useState<EditorState | null>(null);
-  const [boxSelection, setBoxSelection] =
-    useState<BoxSelectionState | null>(null);
-  const boxSelectionRef = useRef<BoxSelectionState | null>(null);
-  const suppressWellClickRef = useRef(false);
-  const [plateZoom, setPlateZoom] = useState(1);
+  const reactionDialogRef = useRef<HTMLDialogElement>(null);
   const [editingPlateName, setEditingPlateName] = useState(false);
   const [plateNameDraft, setPlateNameDraft] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
@@ -383,6 +379,7 @@ export function QpcrPlanner() {
     layoutPreset,
     loadingPattern,
     fillDirection,
+    loadingUnit = "well",
   } = plannerSession.setup;
   const editingSession = plannerSession.plateEditing;
   const generatedAt = plannerSession.generatedAt;
@@ -514,6 +511,7 @@ export function QpcrPlanner() {
     () => new Set(blankSampleNames),
     [blankSampleNames],
   );
+  const loadingStrips = useMemo(() => buildLoadingStrips(sampleNames, samples.map((sample) => ({ ...sample, name: sample.name.trim() }))), [sampleNames, samples]);
   const dimensions = getPlateDimensions(plateType);
   const completeGenes = useMemo(
     () =>
@@ -636,7 +634,11 @@ export function QpcrPlanner() {
           "One target plus all references cannot fit on this plate",
         ),
       );
+    if (loadingUnit === "eight-strip" && referenceGenes.length + 1 > Math.floor(dimensions.columns / Math.max(1, replicates)) * dimensions.rows / 8) {
+      issues.push(tr("一条八连排的目的基因和全部内参无法同板容纳，请减少复孔或内参。", "One source strip with a target and all references cannot fit; reduce replicates or references."));
+    }
     if (
+      loadingUnit !== "eight-strip" &&
       plateType === 384 &&
       loadingPattern === "interleaved-8-channel" &&
       fillDirection === "vertical" &&
@@ -652,7 +654,9 @@ export function QpcrPlanner() {
       );
     return issues;
   }, [
+    loadingUnit,
     dimensions.columns,
+    dimensions.rows,
     completeGenes,
     effectiveBlocks,
     fillDirection,
@@ -979,6 +983,7 @@ export function QpcrPlanner() {
         id: makeId("sample"),
         name: value,
         kind,
+        loadingGroup: loadingGroupDraft.trim(),
       });
     }
     if (additions.length > 0) {
@@ -1036,6 +1041,7 @@ export function QpcrPlanner() {
         id: makeId("sample"),
         name,
         kind: "sample",
+        loadingGroup: loadingGroupDraft.trim(),
         cellLine: row.cellLine?.trim() ?? "",
         comparisonGroup: row.comparisonGroup?.trim() ?? "",
         isBridge: false,
@@ -1098,6 +1104,12 @@ export function QpcrPlanner() {
         `Updated design metadata for ${selected.size} sample(s).`,
       ),
     });
+  }
+
+  function applyLoadingGroup() {
+    const selected = new Set(selectedSampleIds);
+    commitEntrySnapshot({ samples: samples.map((sample) => selected.has(sample.id) ? { ...sample, loadingGroup: loadingGroupDraft.trim() } : sample), genes });
+    setSelectedSampleIds([]);
   }
 
   function addGenes(
@@ -1259,7 +1271,7 @@ export function QpcrPlanner() {
       setToast({
         tone: "success",
         message:
-          layoutPreset === "gene-major"
+          loadingUnit === "eight-strip" ? tr(`已按八连排生成 ${plateCount} 块板；组尾空位已保留。`, `Generated ${plateCount} plate(s) in whole strips; unused channels remain empty.`) : layoutPreset === "gene-major"
             ? tr(
                 `已按基因排列生成 ${plateCount} 块 ${plateType} 孔板；每个基因内保持样本输入顺序。`,
                 `Generated ${plateCount} ${plateType}-well plate(s) by assay; sample input order is preserved within every assay.`,
@@ -1354,6 +1366,11 @@ export function QpcrPlanner() {
     setGenePaste("");
     setSampleQuickCount("");
     setGeneQuickCount("");
+    setLoadingGroupDraft("");
+    setShowComparisonFields(false);
+    setSelectedSampleIds([]);
+    setBulkCellLine("");
+    setBulkComparisonGroup("");
     setActivePlateIndex(0);
     setEditor(null);
     setEditingPlateName(false);
@@ -1395,7 +1412,6 @@ export function QpcrPlanner() {
     plate: PlannerPlate,
     well: PlannerWell,
   ) {
-    if (suppressWellClickRef.current) return;
     if (confirmed[String(plate.plateNumber)] || settingsStale) return;
     if (moveMode) {
       moveSelectionTo(plateIndex, plate, well.wellId);
@@ -1421,126 +1437,6 @@ export function QpcrPlanner() {
     });
   }
 
-  function boxPointerPosition(event: ReactPointerEvent<HTMLDivElement>) {
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const unscaledWidth = bounds.width / plateZoom;
-    const unscaledHeight = bounds.height / plateZoom;
-    return {
-      x: Math.max(
-        0,
-        Math.min(unscaledWidth, (event.clientX - bounds.left) / plateZoom),
-      ),
-      y: Math.max(
-        0,
-        Math.min(unscaledHeight, (event.clientY - bounds.top) / plateZoom),
-      ),
-    };
-  }
-
-  function wellIdAtPointer(event: ReactPointerEvent<HTMLDivElement>) {
-    const element = document.elementFromPoint(event.clientX, event.clientY);
-    return element
-      ?.closest<HTMLButtonElement>("button[data-well-id]")
-      ?.dataset.wellId;
-  }
-
-  function beginBoxSelection(
-    event: ReactPointerEvent<HTMLDivElement>,
-    plate: PlannerPlate,
-  ) {
-    if (
-      event.button !== 0 ||
-      moveMode ||
-      confirmed[String(plate.plateNumber)] ||
-      settingsStale
-    ) {
-      return;
-    }
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-    const anchorWellId = target
-      .closest<HTMLButtonElement>("button[data-well-id]")
-      ?.dataset.wellId;
-    if (!anchorWellId) return;
-
-    const position = boxPointerPosition(event);
-    const next: BoxSelectionState = {
-      pointerId: event.pointerId,
-      anchorWellId,
-      endWellId: anchorWellId,
-      baseWellIds: [...selectedWellIds],
-      mode: event.metaKey || event.ctrlKey ? "add" : "replace",
-      startX: position.x,
-      startY: position.y,
-      currentX: position.x,
-      currentY: position.y,
-      active: false,
-    };
-    boxSelectionRef.current = next;
-    setBoxSelection(next);
-  }
-
-  function updateBoxSelection(
-    event: ReactPointerEvent<HTMLDivElement>,
-    plate: PlannerPlate,
-  ) {
-    const current = boxSelectionRef.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-
-    const position = boxPointerPosition(event);
-    const distance = Math.hypot(
-      position.x - current.startX,
-      position.y - current.startY,
-    );
-    const active = current.active || distance >= 6;
-    if (active && !current.active) {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    }
-    const endWellId = wellIdAtPointer(event) ?? current.endWellId;
-    const next = {
-      ...current,
-      endWellId,
-      currentX: position.x,
-      currentY: position.y,
-      active,
-    };
-    boxSelectionRef.current = next;
-    setBoxSelection(next);
-    if (!active) return;
-
-    event.preventDefault();
-    runPlateEdit({
-      type: "select-range",
-      plateNumber: plate.plateNumber,
-      anchorWellId: next.anchorWellId,
-      endWellId: next.endWellId,
-      mode: next.mode,
-      baseWellIds: next.baseWellIds,
-    });
-  }
-
-  function finishBoxSelection(event: ReactPointerEvent<HTMLDivElement>) {
-    const current = boxSelectionRef.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    if (current.active) {
-      suppressWellClickRef.current = true;
-      window.setTimeout(() => {
-        suppressWellClickRef.current = false;
-      }, 0);
-    }
-    boxSelectionRef.current = null;
-    setBoxSelection(null);
-  }
-
-  function cancelBoxSelection(event: ReactPointerEvent<HTMLDivElement>) {
-    const current = boxSelectionRef.current;
-    if (!current || current.pointerId !== event.pointerId) return;
-    boxSelectionRef.current = null;
-    setBoxSelection(null);
-  }
 
   function applyManualEdit() {
     if (!layout || !editor) return;
@@ -1902,6 +1798,7 @@ export function QpcrPlanner() {
         .map((sample) => ({
           name: sample.name.trim(),
           kind: sample.kind,
+          loadingGroup: sample.loadingGroup?.trim(),
           cellLine: sample.cellLine?.trim() || undefined,
           comparisonGroup: sample.comparisonGroup?.trim() || undefined,
           isBridge: Boolean(sample.isBridge),
@@ -1913,6 +1810,7 @@ export function QpcrPlanner() {
       layoutStrategy: layout?.strategy,
       loadingPattern: layout?.loadingPattern ?? loadingPattern,
       fillDirection: layout?.fillDirection ?? fillDirection,
+      loadingUnit: layout?.loadingUnit ?? loadingUnit,
       generatedAt,
       validationStatus:
         validationStatus ??
@@ -2268,8 +2166,8 @@ export function QpcrPlanner() {
                   </h2>
                   <p className="panel-description">
                     {tr(
-                      "逐行设置名称与类型；细胞系和比较组可选",
-                      "Set name and type; cell line and comparison group are optional",
+                      "按组上样，不足八位留空",
+                      "Load by group; leave unused channels empty",
                     )}
                   </p>
                 </div>
@@ -2292,6 +2190,13 @@ export function QpcrPlanner() {
               )}
             </div>
             <div className="entry-stack">
+              {loadingUnit === "well" && <button type="button" className="button button-soft" onClick={() => { patchPlannerSetup({ loadingUnit: "eight-strip" }); markChanged(); }}>{tr("当前为旧模式 · 启用八连排分组", "Legacy mode · Enable strip groups")}</button>}
+              <div className="loading-group-input">
+                <label htmlFor="loading-group-name">{tr("上样组", "Loading group")}</label>
+                <input id="loading-group-name" value={loadingGroupDraft} onChange={(event) => setLoadingGroupDraft(event.target.value)} placeholder={tr("默认组", "Default group")} />
+                {selectedSampleIds.length > 0 && <button type="button" className="button button-soft" onClick={applyLoadingGroup}>{tr(`归入已选 ${selectedSampleIds.length} 个`, `Assign ${selectedSampleIds.length}`)}</button>}
+              </div>
+              <p className="microcopy">{selectedSampleIds.length > 0 ? tr("填组名后归入；留空则回到默认组。", "Assign the group above; leave it empty for the default group.") : tr("新添加的样本归入此组；也可勾选已有样本分组。", "New samples join this group; select existing samples to regroup.")}</p>
               <div className="sample-import-area">
                 <textarea
                   className="batch-box sample-batch-box"
@@ -2355,11 +2260,11 @@ export function QpcrPlanner() {
                   <p className="entry-order-help">
                     <GripVertical size={12} />
                     {tr(
-                      "拖动排序；第二行依次为细胞系、比较组、桥接；⌘/Ctrl+Z 撤销",
-                      "Drag to reorder; row 2 is cell line, comparison group, bridge; ⌘/Ctrl+Z to undo",
+                      "拖动排序 · 勾选分组 · ⌘/Ctrl+Z 撤销",
+                      "Drag to reorder · Select to group · ⌘/Ctrl+Z undo",
                     )}
                   </p>
-                  {selectedSampleIds.length > 0 && (
+                  {selectedSampleIds.length > 0 && showComparisonFields && (
                     <div className="sample-bulk-metadata" role="group">
                       <strong>
                         {tr(
@@ -2411,9 +2316,31 @@ export function QpcrPlanner() {
                         moveEntryWithKeyboard(entry.kind, entry.id, offset)
                       }
                     >
+                      <button
+                        className={`sample-select-toggle ${
+                          selectedSampleIds.includes(sample.id) ? "is-active" : ""
+                        }`}
+                        type="button"
+                        onClick={() =>
+                          setSelectedSampleIds((current) =>
+                            current.includes(sample.id)
+                              ? current.filter((id) => id !== sample.id)
+                              : [...current, sample.id],
+                          )
+                        }
+                        aria-pressed={selectedSampleIds.includes(sample.id)}
+                        aria-label={tr(
+                          `选择样本 ${sample.name || "当前行"}进行批量设置`,
+                          `Select ${sample.name || "this sample"} for bulk assignment`,
+                        )}
+                        title={tr("选择后批量设置分组", "Select for bulk assignment")}
+                      >
+                        {selectedSampleIds.includes(sample.id) && <Check size={12} />}
+                      </button>
                       <input
                         className="sample-name-input"
                         value={sample.name}
+                        title={sample.name}
                         onChange={(event) => {
                           const nextName = event.target.value;
                           setSamples((current) =>
@@ -2442,6 +2369,15 @@ export function QpcrPlanner() {
                           `Sample name: ${sample.name || "empty"}`,
                         )}
                       />
+                      <span
+                        className="sample-loading-group"
+                        title={tr(
+                          `上样组：${sample.loadingGroup?.trim() || "默认组"}`,
+                          `Loading group: ${sample.loadingGroup?.trim() || "Default group"}`,
+                        )}
+                      >
+                        {sample.loadingGroup?.trim() || tr("默认", "Default")}
+                      </span>
                       <button
                         className={`entry-type-toggle ${
                           sample.kind === "blank" ? "is-blank" : ""
@@ -2510,29 +2446,7 @@ export function QpcrPlanner() {
                       >
                         <Trash2 size={15} />
                       </button>
-                      <div className="sample-metadata-row">
-                        <button
-                          className={`sample-select-toggle ${
-                            selectedSampleIds.includes(sample.id) ? "is-active" : ""
-                          }`}
-                          type="button"
-                          disabled={sample.kind === "blank"}
-                          onClick={() =>
-                            setSelectedSampleIds((current) =>
-                              current.includes(sample.id)
-                                ? current.filter((id) => id !== sample.id)
-                                : [...current, sample.id],
-                            )
-                          }
-                          aria-pressed={selectedSampleIds.includes(sample.id)}
-                          aria-label={tr(
-                            `选择样本 ${sample.name || "当前行"}进行批量设置`,
-                            `Select ${sample.name || "this sample"} for bulk assignment`,
-                          )}
-                          title={tr("选择后批量设置分组", "Select for bulk assignment")}
-                        >
-                          {selectedSampleIds.includes(sample.id) && <Check size={12} />}
-                        </button>
+                      {showComparisonFields && <div className="sample-metadata-row">
                         <input
                           className="sample-metadata-input"
                           value={sample.cellLine ?? ""}
@@ -2605,7 +2519,7 @@ export function QpcrPlanner() {
                         >
                           {tr("桥接", "Bridge")}
                         </button>
-                      </div>
+                      </div>}
                     </SortableEntryRow>
                   ))}
                   {comparisonAdvisories.map((advisory) => (
@@ -2615,6 +2529,7 @@ export function QpcrPlanner() {
                       <button
                         type="button"
                         onClick={() => {
+                          setShowComparisonFields(true);
                           setSelectedSampleIds(advisory.sampleIds);
                           setBulkCellLine(advisory.cellLine);
                           setBulkComparisonGroup("");
@@ -2626,6 +2541,14 @@ export function QpcrPlanner() {
                   ))}
                 </div>
               )}
+              <button type="button" className="button button-quiet comparison-disclosure" aria-expanded={showComparisonFields} onClick={() => setShowComparisonFields((value) => !value)}>{showComparisonFields ? tr("收起比较组设置", "Hide comparison settings") : tr("细胞系 / 比较组 / 桥接", "Cell line / comparison / bridge")}</button>
+              {loadingUnit === "eight-strip" && loadingStrips.length > 0 && <details className="strip-summary">
+                <summary>{tr(`${loadingStrips.length} 条八连排 · 留空 ${loadingStrips.length * 8 - sampleNames.length} 位`, `${loadingStrips.length} source strips · ${loadingStrips.length * 8 - sampleNames.length} empty channels`)}</summary>
+                {loadingStrips.map((strip) => <div key={strip.index} className="source-strip">
+                  <strong>{strip.group || tr("默认组", "Default group")} · {strip.groupStripIndex + 1}</strong>
+                  <ol>{Array.from({ length: 8 }, (_, i) => <li key={i}><span>{String.fromCharCode(65 + i)}</span>{strip.samples[i] || tr("留空", "Empty")}</li>)}</ol>
+                </div>)}
+              </details>}
               {samples.length === 0 && !sampleDraftOpen && (
                 <p className="microcopy">
                   {tr("尚未添加样本", "No samples added")}
@@ -2797,11 +2720,11 @@ export function QpcrPlanner() {
                   className="gene-list"
                   aria-label={tr("已添加基因", "Added assays")}
                 >
-                  <p className="entry-order-help">
+                  <p className="entry-order-help" title={tr("拖动排序，点按手柄可上移/下移；⌘/Ctrl+Z 撤销", "Drag to reorder, or tap the handle for move controls; ⌘/Ctrl+Z to undo")}>
                     <GripVertical size={12} />
                     {tr(
-                      "拖动排序，点按手柄可上移/下移；⌘/Ctrl+Z 撤销",
-                      "Drag to reorder, or tap the handle for move controls; ⌘/Ctrl+Z to undo",
+                      "拖动排序 · ⌘/Ctrl+Z 撤销",
+                      "Drag to reorder · ⌘/Ctrl+Z to undo",
                     )}
                   </p>
                   {genes.map((gene, index) => (
@@ -2834,6 +2757,7 @@ export function QpcrPlanner() {
                       <input
                         className="sample-name-input"
                         value={gene.name}
+                        title={gene.name}
                         onChange={(event) => {
                           const nextName = event.target.value;
                           setGenes((current) =>
@@ -3012,59 +2936,10 @@ export function QpcrPlanner() {
                 <span className="section-index">04</span>
                 <div>
                   <h2 className="panel-title">
-                    {tr("技术复孔", "Technical replicates")}
+                    {tr("排布设置", "Layout settings")}
                   </h2>
-                  <p className="panel-description">
-                    {tr(
-                      "同行从左到右连续",
-                      "Contiguous left-to-right within a row",
-                    )}
-                  </p>
                 </div>
               </div>
-            </div>
-            <div className="replicate-control">
-              <div className="stepper">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setReplicates((value) => Math.max(1, value - 1));
-                    markChanged();
-                  }}
-                  aria-label={tr("减少复孔数", "Decrease replicates")}
-                >
-                  <Minus size={14} />
-                </button>
-                <input
-                  value={replicates}
-                  type="number"
-                  min={1}
-                  max={dimensions.columns}
-                  onChange={(event) => {
-                    setReplicates(Number(event.target.value));
-                    markChanged();
-                  }}
-                  aria-label={tr("技术复孔数", "Technical replicate count")}
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    setReplicates((value) =>
-                      Math.min(dimensions.columns, value + 1),
-                    );
-                    markChanged();
-                  }}
-                  aria-label={tr("增加复孔数", "Increase replicates")}
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
-              <span className="microcopy">
-                {tr(
-                  "例如 3 复孔：A1–A3；下一组从 A4 开始",
-                  "Example, 3 replicates: A1–A3; the next block starts at A4",
-                )}
-              </span>
             </div>
             <div className="layout-preset">
               <div className="layout-preset-heading">
@@ -3082,7 +2957,8 @@ export function QpcrPlanner() {
                     aria-pressed={fillDirection === "vertical"}
                     onClick={() => chooseFillDirection("vertical")}
                   >
-                    {tr("纵向优先", "Vertical first")}
+                    {loadingUnit === "eight-strip" && <span className="strip-direction-diagram" aria-hidden="true">{[1, 3, 5, 2, 4, 6].map((n) => <small key={n}>{n}</small>)}</span>}
+                    {loadingUnit === "eight-strip" ? tr("N · 先下后右", "N · Down first") : tr("纵向优先", "Vertical first")}
                   </button>
                   <button
                     className={
@@ -3092,7 +2968,8 @@ export function QpcrPlanner() {
                     aria-pressed={fillDirection === "horizontal"}
                     onClick={() => chooseFillDirection("horizontal")}
                   >
-                    {tr("横向优先", "Horizontal first")}
+                    {loadingUnit === "eight-strip" && <span className="strip-direction-diagram" aria-hidden="true">{[1, 2, 3, 4, 5, 6].map((n) => <small key={n}>{n}</small>)}</span>}
+                    {loadingUnit === "eight-strip" ? tr("Z · 先右后下", "Z · Across first") : tr("横向优先", "Horizontal first")}
                   </button>
                 </div>
               </div>
@@ -3129,7 +3006,7 @@ export function QpcrPlanner() {
                 </button>
               </div>
               <p className="microcopy layout-preset-help">
-                {plateType === 384 &&
+                {loadingUnit === "eight-strip" ? tr("整条八连排行进；组内 A–H 不变，复孔始终横向。", "Move whole strips; A–H order stays fixed and replicates run horizontally.") : plateType === 384 &&
                 loadingPattern === "interleaved-8-channel"
                   ? layoutPreset === "sample-major"
                     ? fillDirection === "horizontal"
@@ -3171,6 +3048,12 @@ export function QpcrPlanner() {
                         )}
               </p>
             </div>
+            <details className="setup-advanced">
+              <summary>{tr("上样设置", "Loading settings")} · {loadingUnit === "eight-strip" ? tr("八连排", "8-tube strips") : tr("单孔（旧模式）", "Individual wells (legacy)")}</summary>
+              <div className="segmented" role="group" aria-label={tr("上样单位", "Loading unit")}>
+                <button type="button" className={loadingUnit === "eight-strip" ? "active" : ""} aria-pressed={loadingUnit === "eight-strip"} onClick={() => { patchPlannerSetup({ loadingUnit: "eight-strip" }); markChanged(); }}>{tr("八连排", "8-tube strips")}</button>
+                <button type="button" className={loadingUnit === "well" ? "active" : ""} aria-pressed={loadingUnit === "well"} onClick={() => { patchPlannerSetup({ loadingUnit: "well" }); markChanged(); }}>{tr("单孔（旧模式）", "Wells (legacy)")}</button>
+              </div>
             {plateType === 384 && (
               <div className="loading-pattern">
                 <div className="loading-pattern-heading">
@@ -3252,7 +3135,7 @@ export function QpcrPlanner() {
                     </span>
                   </button>
                 </div>
-                {loadingPattern === "interleaved-8-channel" && (
+                {loadingPattern === "interleaved-8-channel" && loadingUnit !== "eight-strip" && (
                   <div
                     className={`loading-pattern-advisory ${
                       layoutPreset === "sample-major" ||
@@ -3282,6 +3165,7 @@ export function QpcrPlanner() {
                 )}
               </div>
             )}
+            </details>
             <div className="setup-summary">
               <strong>
                 {tr(
@@ -3326,24 +3210,73 @@ export function QpcrPlanner() {
           aria-label={tr("板布局工作区", "Plate layout workspace")}
         >
           <section className="hero-strip" aria-labelledby="planner-title">
-            <div>
-              <p className="eyebrow">
-                <ShieldCheck size={13} />
-                {tr("版布局预览", "Layout preview")}
-              </p>
-              <h1 className="hero-title" id="planner-title">
-                {layout
-                  ? tr(
-                      `已生成 ${layout.plates.length} 块实验板`,
-                      `${layout.plates.length} plate(s) generated`,
-                    )
-                  : tr(
-                      "先设置样本、基因与复孔",
-                      "Set samples, assays, and replicates",
-                    )}
-              </h1>
+            <div className="preview-heading">
+              <div className="preview-heading-copy">
+                <h1 className="hero-title" id="planner-title">{tr("版布局预览", "Layout preview")}</h1>
+                <span className="preview-status">
+                  {layout
+                    ? tr(`已生成 ${layout.plates.length} 块板`, `${layout.plates.length} plate(s)`)
+                    : tr("设置样本、基因与复孔后生成", "Set samples, assays, and replicates")}
+                </span>
+              </div>
+              <div className="preview-actions">
+                <div
+                  className="replicate-control"
+                  title={tr("复孔同行从左到右连续，例如 3 复孔：A1–A3", "Replicates stay contiguous left-to-right within one row, e.g. triplicates at A1–A3")}
+                >
+                  <label htmlFor="technical-replicates">{tr("技术复孔", "Replicates")}</label>
+                  <div className="stepper">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplicates((value) => Math.max(1, value - 1));
+                        markChanged();
+                      }}
+                      aria-label={tr("减少复孔数", "Decrease replicates")}
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      id="technical-replicates"
+                      value={replicates}
+                      type="number"
+                      min={1}
+                      max={dimensions.columns}
+                      onChange={(event) => {
+                        setReplicates(Number(event.target.value));
+                        markChanged();
+                      }}
+                      aria-label={tr("技术复孔数", "Technical replicate count")}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplicates((value) => Math.min(dimensions.columns, value + 1));
+                        markChanged();
+                      }}
+                      aria-label={tr("增加复孔数", "Increase replicates")}
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                </div>
+              <button
+                className="button button-soft reaction-toggle"
+                type="button"
+                disabled={!layout}
+                aria-haspopup="dialog"
+                aria-controls="reaction-drawer"
+                onClick={() => reactionDialogRef.current?.showModal()}
+              >
+                <Calculator size={15} />
+                {tr("反应体系", "Reaction setup")}
+              </button>
+              </div>
+            </div>
+            <details className="preview-details">
+              <summary>{tr("排布说明与统计", "Layout details & totals")}</summary>
               <p className="hero-copy">
-                {previewIs384 &&
+                {(layout?.loadingUnit ?? loadingUnit) === "eight-strip" ? tr("每组独立从八连排 A 位开始，余位留空；复孔横向连续，比较组与同板内参规则不变。", "Each group starts at source A with unused channels left empty. Replicates stay horizontal; comparison and same-plate reference rules still apply.") : previewIs384 &&
                 previewLoadingPattern === "interleaved-8-channel"
                   ? (layout?.strategy ?? layoutPreset) === "gene-major"
                     ? previewFillDirection === "horizontal"
@@ -3384,7 +3317,6 @@ export function QpcrPlanner() {
                           "By sample: all assays for one sample stay grouped top-to-bottom, then left-to-right; replicates remain contiguous within a row. When a sample continues onto another plate, all references are rerun there.",
                         )}
               </p>
-            </div>
             <div
               className="summary-grid"
               aria-label={tr("布局摘要", "Layout summary")}
@@ -3461,20 +3393,8 @@ export function QpcrPlanner() {
                     : tr("等待生成", "Waiting")}
                 </span>
               </div>
-              {layout && (
-                <p className="rationale">
-                  {layout.strategy === "gene-major"
-                    ? tr(
-                        `先优化板数与跨板内参重做，再按基因分组${layout.fillDirection === "horizontal" ? "横向" : "纵向"}填充；空余孔位保留。`,
-                        `Plate count and reference reruns are optimized first, then assay groups fill ${layout.fillDirection === "horizontal" ? "horizontally" : "vertically"}; unused wells remain empty.`,
-                      )
-                    : tr(
-                        `先优化板数与跨板内参重做，再按样本分组${layout.fillDirection === "horizontal" ? "横向" : "纵向"}填充；空余孔位保留。`,
-                        `Plate count and reference reruns are optimized first, then sample groups fill ${layout.fillDirection === "horizontal" ? "horizontally" : "vertically"}; unused wells remain empty.`,
-                      )}
-                </p>
-              )}
             </div>
+            </details>
           </section>
 
           {!layout ? (
@@ -3518,7 +3438,7 @@ export function QpcrPlanner() {
               )}
 
               <nav
-                className="plate-nav"
+                className={`plate-nav ${layout.plates.length === 1 ? "single-plate" : ""}`}
                 aria-label={tr("孔板列表", "Plate list")}
               >
                 {layout.plates.map((plate, index) => {
@@ -3636,18 +3556,12 @@ export function QpcrPlanner() {
                       <div className="plate-subtitle">
                         <span>
                           {tr(
-                            `板号 ${String(activePlate.plateNumber).padStart(
-                              2,
-                              "0",
-                            )} · ${plateType} 孔 · 已使用 ${
+                            `${plateType} 孔 · 已使用 ${
                               activePlate.wells.filter(
                                 (well) => well.sample && well.gene,
                               ).length
                             } / ${plateType} · ${activePlate.sampleNames.length} 个样本`,
-                            `Plate ID ${String(activePlate.plateNumber).padStart(
-                              2,
-                              "0",
-                            )} · ${plateType}-well · ${
+                            `${plateType}-well · ${
                               activePlate.wells.filter(
                                 (well) => well.sample && well.gene,
                               ).length
@@ -3751,26 +3665,25 @@ export function QpcrPlanner() {
                         </span>
                       )}
                     </div>
-                    <span className="plate-hint">
+                    <details className="plate-hint">
+                      <summary>{tr("操作提示", "Interaction help")}</summary>
                       {tr(
                         "单击选择 · Shift 连选 · 拖动框选 · Ctrl/⌘ 增减 · 双击编辑",
                         "Click · Shift range · Drag to box-select · Ctrl/⌘ toggle · Double-click to edit",
                       )}
-                    </span>
+                    </details>
                   </div>
 
                   {activePlate.rows === 16 &&
                     previewLoadingPattern === "interleaved-8-channel" && (
-                      <div
+                      <details
                         className="loading-route-guide"
                         aria-label={tr(
                           "八道排枪隔行上样路径",
                           "Interleaved 8-channel loading route",
                         )}
                       >
-                        <span className="loading-route-guide-title">
-                          {tr("上样路径", "Loading route")}
-                        </span>
+                        <summary className="loading-route-guide-title">{tr("八道排枪上样路径", "8-channel loading route")}</summary>
                         <span className="loading-route-pass pass-one">
                           <b aria-hidden="true">①</b>
                           <span>
@@ -3789,10 +3702,29 @@ export function QpcrPlanner() {
                             "Plate remains in physical A–P order",
                           )}
                         </span>
-                      </div>
+                      </details>
                     )}
 
-                  <div className="selection-toolbar" aria-live="polite">
+                  <PlateViewport
+                    key={activePlate.id}
+                    name={activePlate.name}
+                    rows={activePlate.rows}
+                    columns={activePlate.columns}
+                    language={language}
+                    editable={!activePlateConfirmed && !settingsStale}
+                    moveMode={moveMode}
+                    selectedWellIds={selectedWellIds}
+                    describeWell={(wellId) => {
+                      const well = activePlate.wells.find((well) => well.wellId === wellId);
+                      return well ? describePlateWell(well, Boolean(well.sample && blankSampleSet.has(well.sample)), language) : "";
+                    }}
+                    onSelect={(wellIds) => runPlateEdit({
+                      type: "select",
+                      plateNumber: activePlate.plateNumber,
+                      wellIds,
+                      mode: "replace",
+                    })}
+                    editingToolbar={<div className={`selection-toolbar ${selectedWellIds.length === 0 && undoStack.length === 0 && redoStack.length === 0 ? "is-idle" : ""}`} aria-live="polite">
                     <span>
                       {selectedWellIds.length > 0
                         ? tr(
@@ -3955,104 +3887,9 @@ export function QpcrPlanner() {
                           <X size={14} />
                         </button>
                       )}
-                      <span
-                        className="zoom-controls"
-                        role="group"
-                        aria-label={tr("孔板视图缩放", "Plate view zoom")}
-                      >
-                        <button
-                          className="icon-button"
-                          type="button"
-                          disabled={plateZoom <= 0.5}
-                          onClick={() =>
-                            setPlateZoom((value) =>
-                              Math.max(
-                                0.5,
-                                Number((value - 0.1).toFixed(1)),
-                              ),
-                            )
-                          }
-                          aria-label={tr("缩小孔板", "Zoom out")}
-                        >
-                          <ZoomOut size={14} />
-                        </button>
-                        <button
-                          className="zoom-value"
-                          type="button"
-                          onClick={() => setPlateZoom(1)}
-                          title={tr("恢复 100%", "Reset to 100%")}
-                        >
-                          {Math.round(plateZoom * 100)}%
-                        </button>
-                        <button
-                          className="icon-button"
-                          type="button"
-                          disabled={plateZoom >= 1.3}
-                          onClick={() =>
-                            setPlateZoom((value) =>
-                              Math.min(
-                                1.3,
-                                Number((value + 0.1).toFixed(1)),
-                              ),
-                            )
-                          }
-                          aria-label={tr("放大孔板", "Zoom in")}
-                        >
-                          <ZoomIn size={14} />
-                        </button>
-                      </span>
                     </div>
-                  </div>
-
-                  <div className="plate-scroll">
-                    <div
-                      className={`plate-grid ${
-                        activePlate.rows === 16 ? "plate-384" : ""
-                      } ${moveMode ? "move-mode" : ""} ${
-                        boxSelection?.active ? "is-box-selecting" : ""
-                      }`}
-                      style={
-                        {
-                          "--plate-columns": activePlate.columns,
-                          zoom: plateZoom,
-                        } as CSSProperties
-                      }
-                      role="grid"
-                      onPointerDown={(event) =>
-                        beginBoxSelection(event, activePlate)
-                      }
-                      onPointerMove={(event) =>
-                        updateBoxSelection(event, activePlate)
-                      }
-                      onPointerUp={finishBoxSelection}
-                      onPointerCancel={cancelBoxSelection}
-                      aria-label={tr(
-                        `${activePlate.name} 孔板布局`,
-                        `${activePlate.name} plate layout`,
-                      )}
-                    >
-                      {boxSelection?.active && (
-                        <span
-                          className="well-selection-box"
-                          aria-hidden="true"
-                          style={{
-                            left: Math.min(
-                              boxSelection.startX,
-                              boxSelection.currentX,
-                            ),
-                            top: Math.min(
-                              boxSelection.startY,
-                              boxSelection.currentY,
-                            ),
-                            width: Math.abs(
-                              boxSelection.currentX - boxSelection.startX,
-                            ),
-                            height: Math.abs(
-                              boxSelection.currentY - boxSelection.startY,
-                            ),
-                          }}
-                        />
-                      )}
+                  </div>}
+                  >
                       <span className="grid-corner" aria-hidden="true" />
                       {Array.from({ length: activePlate.columns }).map(
                         (_, column) => (
@@ -4130,35 +3967,7 @@ export function QpcrPlanner() {
                               ]
                                 .filter(Boolean)
                                 .join(" ");
-                              const description = empty
-                                ? tr(
-                                    `${well.wellId}，空孔${
-                                      manual ? "，手动修改" : ""
-                                    }`,
-                                    `${well.wellId}, empty${
-                                      manual ? ", manually edited" : ""
-                                    }`,
-                                  )
-                                : tr(
-                                    `${well.wellId}，${
-                                      blank ? "Blank" : "样本"
-                                    } ${well.sample}，基因 ${well.gene}，${
-                                      well.geneType === "reference"
-                                        ? "内参"
-                                        : "目的基因"
-                                    }，复孔 ${well.replicateIndex ?? "—"}${
-                                      manual ? "，手动修改" : ""
-                                    }${bridge ? "，桥接样本" : ""}`,
-                                    `${well.wellId}, ${
-                                      blank ? "Blank" : "sample"
-                                    } ${well.sample}, assay ${well.gene}, ${
-                                      well.geneType === "reference"
-                                        ? "reference"
-                                        : "target"
-                                    }, replicate ${well.replicateIndex ?? "—"}${
-                                      manual ? ", manually edited" : ""
-                                    }${bridge ? ", bridge sample" : ""}`,
-                                  );
+                              const description = describePlateWell(well, blank, language);
                               return (
                                 <button
                                   id={`plate-${activePlate.plateNumber}-well-${well.row}-${well.column}`}
@@ -4217,15 +4026,12 @@ export function QpcrPlanner() {
                                     </span>
                                   )}
                                   {!empty && (
-                                    <span>
+                                    <span className="well-text">
                                       <span className="well-label">
-                                        {shortLabel(
-                                          well.sample ?? "",
-                                          activePlate.rows === 16 ? 4 : 7,
-                                        )}
+                                        {well.sample}
                                       </span>
                                       <span className="well-sub">
-                                        {shortLabel(well.gene ?? "", 7)}
+                                        {well.gene}
                                       </span>
                                     </span>
                                   )}
@@ -4234,8 +4040,7 @@ export function QpcrPlanner() {
                             })}
                         </Fragment>
                       ))}
-                    </div>
-                  </div>
+                  </PlateViewport>
 
                   <div
                     className={`validation-bar ${
@@ -4287,7 +4092,23 @@ export function QpcrPlanner() {
                     </div>
                   </div>
                   </section>
-                  <ReactionCalculator
+                  <dialog
+                    id="reaction-drawer"
+                    className="reaction-drawer"
+                    ref={reactionDialogRef}
+                    aria-label={tr("反应体系与用量", "Reaction setup and requirements")}
+                    onClick={(event) => {
+                      if (event.target === event.currentTarget) reactionDialogRef.current?.close();
+                    }}
+                  >
+                    <div className="reaction-drawer-content">
+                    <button
+                      type="button"
+                      className="icon-button reaction-drawer-close"
+                      aria-label={tr("收起反应体系", "Close reaction setup")}
+                      onClick={() => reactionDialogRef.current?.close()}
+                    ><X size={18} /></button>
+                    <ReactionCalculator
                     layout={layout}
                     samples={samples.filter((sample) => sample.name.trim())}
                     genes={completeGenes.map((gene) => ({
@@ -4300,7 +4121,9 @@ export function QpcrPlanner() {
                       setReactionSystem(nextValue);
                       markChanged();
                     }}
-                  />
+                    />
+                    </div>
+                  </dialog>
                 </div>
               )}
 

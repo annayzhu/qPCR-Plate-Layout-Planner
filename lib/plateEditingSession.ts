@@ -1,284 +1,29 @@
 import {
-  formatWellId,
   refreshPlanDerivedData,
   validateLayout,
   type GeneType,
   type PlanInput,
   type PlanResult,
   type PlannerPlate,
-  type PlannerWell,
   type ValidationResult,
 } from "./platePlanner";
+import {
+  applyBoxSelection,
+  applyManualLayoutPatch,
+  assignSelectedWells,
+  clipboardMatchesExperiment,
+  copySelectedWells,
+  createManualLayoutPatch,
+  invertManualLayoutPatch,
+  pasteCopiedWells,
+  rectangularWellIds,
+  restoreSelectedWells,
+  translateSelectedWells,
+  type ManualLayoutPatch,
+  type WellClipboard,
+} from "./manualLayout";
 
 const HISTORY_LIMIT = 30;
-
-interface CopiedWell {
-  rowOffset: number;
-  columnOffset: number;
-  sample: string | null;
-  gene: string | null;
-  geneType: GeneType | null;
-  replicateIndex: number | null;
-}
-
-interface WellClipboard {
-  wells: CopiedWell[];
-}
-
-function emptyManualWell(well: PlannerWell): PlannerWell {
-  return {
-    ...well,
-    sample: null,
-    gene: null,
-    geneType: null,
-    replicateIndex: null,
-    source: "manual",
-  };
-}
-
-function assignSelectedWells(
-  plate: PlannerPlate,
-  wellIds: readonly string[],
-  assignment: {
-    sample: string | null;
-    gene: string | null;
-    geneType: GeneType | null;
-  },
-) {
-  const selected = new Set(wellIds);
-  return {
-    ...plate,
-    wells: plate.wells.map((well) => {
-      if (!selected.has(well.wellId)) return well;
-      if (!assignment.sample || !assignment.gene || !assignment.geneType) {
-        return emptyManualWell(well);
-      }
-      return {
-        ...well,
-        sample: assignment.sample,
-        gene: assignment.gene,
-        geneType: assignment.geneType,
-        source: "manual" as const,
-      };
-    }),
-  };
-}
-
-function copySelectedWells(
-  plate: PlannerPlate,
-  selectedWellIds: readonly string[],
-): WellClipboard {
-  const selected = new Set(selectedWellIds);
-  const wells = plate.wells.filter((well) => selected.has(well.wellId));
-  if (wells.length === 0) return { wells: [] };
-  const minRow = Math.min(...wells.map((well) => well.row));
-  const minColumn = Math.min(...wells.map((well) => well.column));
-  return {
-    wells: wells
-      .slice()
-      .sort((left, right) => left.row - right.row || left.column - right.column)
-      .map((well) => ({
-        rowOffset: well.row - minRow,
-        columnOffset: well.column - minColumn,
-        sample: well.sample,
-        gene: well.gene,
-        geneType: well.geneType,
-        replicateIndex: well.replicateIndex,
-      })),
-  };
-}
-
-function clipboardMatchesExperiment(
-  clipboard: WellClipboard,
-  sampleNames: readonly string[],
-  geneNames: readonly string[],
-) {
-  const samples = new Set(sampleNames);
-  const genes = new Set(geneNames);
-  return clipboard.wells.every(
-    (well) =>
-      (!well.sample || samples.has(well.sample)) &&
-      (!well.gene || genes.has(well.gene)),
-  );
-}
-
-type PasteResult =
-  | {
-      ok: true;
-      plate: PlannerPlate;
-      pastedWellIds: string[];
-      overwrittenWellIds: string[];
-    }
-  | { ok: false; reason: "empty-clipboard" | "invalid-anchor" | "out-of-bounds" };
-
-function pasteCopiedWells(
-  plate: PlannerPlate,
-  clipboard: WellClipboard,
-  destinationAnchorWellId: string,
-): PasteResult {
-  if (clipboard.wells.length === 0) {
-    return { ok: false, reason: "empty-clipboard" };
-  }
-  const anchor = plate.wells.find(
-    (well) => well.wellId === destinationAnchorWellId,
-  );
-  if (!anchor) return { ok: false, reason: "invalid-anchor" };
-  const destinations = clipboard.wells.map((copied) => ({
-    copied,
-    row: anchor.row + copied.rowOffset,
-    column: anchor.column + copied.columnOffset,
-  }));
-  if (
-    destinations.some(
-      ({ row, column }) =>
-        row < 0 || row >= plate.rows || column < 0 || column >= plate.columns,
-    )
-  ) {
-    return { ok: false, reason: "out-of-bounds" };
-  }
-  const destinationById = new Map(
-    destinations.map((destination) => [
-      formatWellId(destination.row, destination.column),
-      destination,
-    ]),
-  );
-  const overwrittenWellIds = plate.wells
-    .filter(
-      (well) =>
-        destinationById.has(well.wellId) && Boolean(well.sample && well.gene),
-    )
-    .map((well) => well.wellId);
-  const wells = plate.wells.map((well) => {
-    const destination = destinationById.get(well.wellId);
-    if (!destination) return well;
-    return {
-      ...well,
-      sample: destination.copied.sample,
-      gene: destination.copied.gene,
-      geneType: destination.copied.geneType,
-      replicateIndex: destination.copied.replicateIndex,
-      source: "manual" as const,
-    };
-  });
-  return {
-    ok: true,
-    plate: { ...plate, wells },
-    pastedWellIds: destinations.map(({ row, column }) =>
-      formatWellId(row, column),
-    ),
-    overwrittenWellIds,
-  };
-}
-
-function restoreSelectedWells(
-  currentPlate: PlannerPlate,
-  automaticPlate: PlannerPlate,
-  selectedWellIds: readonly string[],
-) {
-  const selected = new Set(selectedWellIds);
-  const automaticByWellId = new Map(
-    automaticPlate.wells.map((well) => [well.wellId, well]),
-  );
-  return {
-    ...currentPlate,
-    wells: currentPlate.wells.map((well) =>
-      selected.has(well.wellId)
-        ? { ...(automaticByWellId.get(well.wellId) ?? well) }
-        : well,
-    ),
-  };
-}
-
-type TranslateResult =
-  | {
-      ok: true;
-      plate: PlannerPlate;
-      movedWellIds: string[];
-      overwrittenWellIds: string[];
-    }
-  | {
-      ok: false;
-      reason: "empty-selection" | "out-of-bounds" | "collision";
-      collisionWellIds?: string[];
-    };
-
-function translateSelectedWells(
-  plate: PlannerPlate,
-  selectedWellIds: readonly string[],
-  destinationAnchorWellId: string,
-  allowOverwrite = false,
-): TranslateResult {
-  const selected = new Set(selectedWellIds);
-  const sources = plate.wells
-    .filter(
-      (well) =>
-        selected.has(well.wellId) && Boolean(well.sample) && Boolean(well.gene),
-    )
-    .sort((left, right) => left.row - right.row || left.column - right.column);
-  const destinationAnchor = plate.wells.find(
-    (well) => well.wellId === destinationAnchorWellId,
-  );
-  if (sources.length === 0 || !destinationAnchor) {
-    return { ok: false, reason: "empty-selection" };
-  }
-  const minRow = Math.min(...sources.map((well) => well.row));
-  const minColumn = Math.min(...sources.map((well) => well.column));
-  const deltaRow = destinationAnchor.row - minRow;
-  const deltaColumn = destinationAnchor.column - minColumn;
-  const moves = sources.map((well) => ({
-    source: well,
-    row: well.row + deltaRow,
-    column: well.column + deltaColumn,
-  }));
-  if (
-    moves.some(
-      ({ row, column }) =>
-        row < 0 || row >= plate.rows || column < 0 || column >= plate.columns,
-    )
-  ) {
-    return { ok: false, reason: "out-of-bounds" };
-  }
-  const sourceIds = new Set(sources.map((well) => well.wellId));
-  const destinationIds = new Set(
-    moves.map(({ row, column }) => formatWellId(row, column)),
-  );
-  const collisionWellIds = plate.wells
-    .filter(
-      (well) =>
-        destinationIds.has(well.wellId) &&
-        !sourceIds.has(well.wellId) &&
-        Boolean(well.sample) &&
-        Boolean(well.gene),
-    )
-    .map((well) => well.wellId);
-  if (collisionWellIds.length > 0 && !allowOverwrite) {
-    return { ok: false, reason: "collision", collisionWellIds };
-  }
-  const nextWells = plate.wells.map((well) =>
-    sourceIds.has(well.wellId) ? emptyManualWell(well) : { ...well },
-  );
-  const indexByWellId = new Map(
-    nextWells.map((well, index) => [well.wellId, index]),
-  );
-  for (const move of moves) {
-    const wellId = formatWellId(move.row, move.column);
-    const index = indexByWellId.get(wellId);
-    if (index === undefined) return { ok: false, reason: "out-of-bounds" };
-    nextWells[index] = {
-      ...move.source,
-      wellId,
-      row: move.row,
-      column: move.column,
-      source: "manual",
-    };
-  }
-  return {
-    ok: true,
-    plate: { ...plate, wells: nextWells },
-    movedWellIds: moves.map(({ row, column }) => formatWellId(row, column)),
-    overwrittenWellIds: collisionWellIds,
-  };
-}
 
 export interface PlateSelection {
   plateNumber: number | null;
@@ -287,7 +32,7 @@ export interface PlateSelection {
 }
 
 interface HistorySnapshot {
-  plan: PlanResult;
+  patch: ManualLayoutPatch;
   selection: PlateSelection;
   moveMode: boolean;
 }
@@ -392,9 +137,12 @@ function cloneSelection(selection: PlateSelection): PlateSelection {
   return { ...selection, wellIds: [...selection.wellIds] };
 }
 
-function snapshot(session: PlateEditingSession): HistorySnapshot {
+function historySnapshot(
+  session: PlateEditingSession,
+  patch: ManualLayoutPatch,
+): HistorySnapshot {
   return {
-    plan: session.plan,
+    patch,
     selection: cloneSelection(session.selection),
     moveMode: session.moveMode,
   };
@@ -409,30 +157,6 @@ function cappedHistory(
 
 function plateByNumber(plan: PlanResult, plateNumber: number) {
   return plan.plates.find((plate) => plate.plateNumber === plateNumber);
-}
-
-function rectangularWellIds(
-  plate: PlannerPlate,
-  anchorWellId: string,
-  endWellId: string,
-) {
-  const anchor = plate.wells.find((well) => well.wellId === anchorWellId);
-  const end = plate.wells.find((well) => well.wellId === endWellId);
-  if (!anchor || !end) return [];
-  const minRow = Math.min(anchor.row, end.row);
-  const maxRow = Math.max(anchor.row, end.row);
-  const minColumn = Math.min(anchor.column, end.column);
-  const maxColumn = Math.max(anchor.column, end.column);
-  return plate.wells
-    .filter(
-      (well) =>
-        well.row >= minRow &&
-        well.row <= maxRow &&
-        well.column >= minColumn &&
-        well.column <= maxColumn,
-    )
-    .sort((left, right) => left.row - right.row || left.column - right.column)
-    .map((well) => well.wellId);
 }
 
 function replacePlate(plan: PlanResult, replacement: PlannerPlate) {
@@ -452,6 +176,11 @@ function appliedMutation(
 ): PlateEditResult {
   const refreshedPlan = refreshPlanDerivedData(plan, session.planInput);
   const invalidated = new Set(affectedPlateNumbers);
+  const undoPatch = createManualLayoutPatch(
+    refreshedPlan,
+    session.plan,
+    affectedPlateNumbers,
+  );
   const nextSession: PlateEditingSession = {
     ...session,
     plan: refreshedPlan,
@@ -461,7 +190,10 @@ function appliedMutation(
         (plateNumber) => !invalidated.has(plateNumber),
       ),
     ),
-    undoStack: cappedHistory(session.undoStack, snapshot(session)),
+    undoStack: cappedHistory(
+      session.undoStack,
+      historySnapshot(session, undoPatch),
+    ),
     redoStack: [],
     audit: validateLayout(refreshedPlan, session.planInput),
   };
@@ -520,10 +252,7 @@ export function dispatchPlateEdit(
       (session.selection.plateNumber === command.plateNumber
         ? session.selection.wellIds
         : []);
-    const wellIds =
-      command.mode === "add"
-        ? Array.from(new Set([...base, ...range]))
-        : range;
+    const wellIds = applyBoxSelection(base, range, command.mode);
     const selection: PlateSelection = {
       plateNumber: command.plateNumber,
       wellIds,
@@ -786,10 +515,13 @@ export function dispatchPlateEdit(
         command.type === "undo" ? "nothing-to-undo" : "nothing-to-redo",
       );
     }
-    const changedPlateNumbers = session.plan.plates
-      .filter((plate, index) => plate !== target.plan.plates[index])
-      .map((plate) => plate.plateNumber);
-    const plan = refreshPlanDerivedData(target.plan, session.planInput);
+    const changedPlateNumbers = target.patch.plateNumbers;
+    const patchedPlan = applyManualLayoutPatch(session.plan, target.patch);
+    const plan = refreshPlanDerivedData(patchedPlan, session.planInput);
+    const oppositeSnapshot = historySnapshot(
+      session,
+      invertManualLayoutPatch(target.patch),
+    );
     const next: PlateEditingSession = {
       ...session,
       plan,
@@ -803,11 +535,11 @@ export function dispatchPlateEdit(
       undoStack:
         command.type === "undo"
           ? session.undoStack.slice(0, -1)
-          : cappedHistory(session.undoStack, snapshot(session)),
+          : cappedHistory(session.undoStack, oppositeSnapshot),
       redoStack:
         command.type === "redo"
           ? session.redoStack.slice(0, -1)
-          : cappedHistory(session.redoStack, snapshot(session)),
+          : cappedHistory(session.redoStack, oppositeSnapshot),
       audit: validateLayout(plan, session.planInput),
     };
     return {
