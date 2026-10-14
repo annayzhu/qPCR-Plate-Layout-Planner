@@ -1,3 +1,5 @@
+import { buildLoadingStrips, loadingStripSlots, loadingTilePosition } from "./loadingStrips";
+
 export type PlateType = 96 | 384;
 export type GeneType = "target" | "reference";
 export type LayoutSource = "auto" | "manual";
@@ -5,8 +7,10 @@ export type LayoutStrategy = "sample-major" | "gene-major" | "hybrid";
 export type LayoutPreset = Exclude<LayoutStrategy, "hybrid">;
 export type LoadingPattern = "sequential" | "interleaved-8-channel";
 export type LayoutFillDirection = "vertical" | "horizontal";
+export type LoadingUnit = "well" | "eight-strip";
 
 export interface PlanOptions {
+  loadingUnit?: LoadingUnit;
   strategy?: LayoutPreset;
   loadingPattern?: LoadingPattern;
   fillDirection?: LayoutFillDirection;
@@ -23,6 +27,7 @@ export interface PlanInput {
 
 export interface PlanSampleDesign {
   name: string;
+  loadingGroup?: string;
   kind?: "sample" | "blank";
   cellLine?: string;
   comparisonGroup?: string;
@@ -72,6 +77,7 @@ export interface PlanMetrics {
 }
 
 export interface PlanResult {
+  loadingUnit?: LoadingUnit;
   plates: PlannerPlate[];
   strategy: LayoutStrategy;
   loadingPattern: LoadingPattern;
@@ -277,6 +283,7 @@ function normalizeSampleDesigns(
     }
     return {
       name,
+      ...(raw?.loadingGroup?.trim() ? { loadingGroup: raw.loadingGroup.trim() } : {}),
       kind,
       cellLine,
       comparisonGroup,
@@ -505,13 +512,26 @@ function geneBandLoadAfterPair(
   rows: number,
   sampleIndices: SampleIndexMap,
 ) {
-  const hypothetical = copyPackedPlate(plate);
-  addTargetPair(hypothetical, pair);
-  return geneBandLoad(
-    hypothetical,
-    referenceCount,
-    rows,
-    sampleIndices,
+  const pairBand = Math.floor(
+    sampleGlobalIndex(pair.sample, sampleIndices) / rows,
+  );
+  let referenceBandExists = false;
+  let targetBandExists = false;
+
+  for (const [sample, targets] of plate.samples) {
+    const sampleBand = Math.floor(
+      sampleGlobalIndex(sample, sampleIndices) / rows,
+    );
+    if (sampleBand !== pairBand) continue;
+    referenceBandExists = true;
+    if (targets.has(pair.gene)) targetBandExists = true;
+    if (targetBandExists) break;
+  }
+
+  return (
+    geneBandLoad(plate, referenceCount, rows, sampleIndices) +
+    (referenceBandExists ? 0 : referenceCount) +
+    (targetBandExists ? 0 : 1)
   );
 }
 
@@ -966,6 +986,7 @@ function comparisonAllocationUnits(
   capacity: number,
   load: (plate: PackedPlate) => number,
   replicates: number,
+  stripSlots?: SampleIndexMap,
 ) {
   const sampleIndex = new Map(
     samples.map((sample, index) => [sample, index]),
@@ -1023,10 +1044,17 @@ function comparisonAllocationUnits(
       const nonBridge = members.filter((member) => !member.isBridge);
       let currentPairs = [...bridgePairs];
       let splitOrder = 0;
+      const batches = new Map<number | string, PlanSampleDesign[]>();
       for (const member of nonBridge) {
+        const key = stripSlots ? Math.floor(sampleGlobalIndex(member.name, stripSlots) / 8) : member.name;
+        const batch = batches.get(key) ?? [];
+        batch.push(member);
+        batches.set(key, batch);
+      }
+      for (const batch of batches.values()) {
         const nextPairs = [
           ...currentPairs,
-          { sample: member.name, gene },
+          ...batch.map((member) => ({ sample: member.name, gene })),
         ];
         if (loadAfterPairs(emptyPackedPlate(), nextPairs, load) <= capacity) {
           currentPairs = nextPairs;
@@ -1047,8 +1075,11 @@ function comparisonAllocationUnits(
         splitOrder += 1;
         currentPairs = [
           ...bridgePairs,
-          { sample: member.name, gene },
+          ...batch.map((member) => ({ sample: member.name, gene })),
         ];
+        if (loadAfterPairs(emptyPackedPlate(), currentPairs, load) > capacity) {
+          throw new PlatePlannerError("E_BRIDGE_OVERHEAD_TOO_LARGE", "桥接样本与一条完整八连排无法放入同板，请调整上样分组或减少复孔。 / A complete loading strip plus bridge samples does not fit; revise loading groups or reduce replicates.");
+        }
       }
       if (currentPairs.length > bridgePairs.length || nonBridge.length === 0) {
         units.push({
@@ -1074,6 +1105,52 @@ function comparisonAllocationUnits(
   return units;
 }
 
+/** Join biological units sharing a source strip/assay. Explicit bridge repeats
+ * remain independent: joining those would undo the authorized cross-plate split. */
+function mergeStripAllocationUnits(
+  units: AllocationUnit[],
+  slots: SampleIndexMap,
+  capacity: number,
+  load: (plate: PackedPlate) => number,
+) {
+  const pairCounts = new Map<string, number>();
+  for (const unit of units) for (const pair of unit.pairs) {
+    const key = groupKey(pair.sample, pair.gene);
+    pairCounts.set(key, (pairCounts.get(key) ?? 0) + 1);
+  }
+  const parents = units.map((_, index) => index);
+  const root = (index: number): number => {
+    if (parents[index] !== index) parents[index] = root(parents[index]);
+    return parents[index];
+  };
+  const owners = new Map<string, number>();
+  units.forEach((unit, index) => {
+    for (const pair of unit.pairs) {
+      if (pairCounts.get(groupKey(pair.sample, pair.gene))! > 1) continue;
+      const key = groupKey(String(Math.floor(sampleGlobalIndex(pair.sample, slots) / 8)), pair.gene);
+      const owner = owners.get(key);
+      if (owner !== undefined) parents[root(index)] = root(owner);
+      else owners.set(key, index);
+    }
+  });
+  const merged = new Map<number, AllocationUnit>();
+  units.forEach((unit, index) => {
+    const key = root(index);
+    const current = merged.get(key);
+    if (!current) merged.set(key, { ...unit, pairs: [...unit.pairs] });
+    else {
+      current.pairs.push(...unit.pairs);
+      current.sampleOrder = Math.min(current.sampleOrder, unit.sampleOrder);
+    }
+  });
+  for (const unit of merged.values()) {
+    if (loadAfterPairs(emptyPackedPlate(), unit.pairs, load) > capacity) {
+      throw new PlatePlannerError("E_LOADING_GROUP_CONFLICT", "上样组与比较组相互交叉，完整八连排无法在保留同板比较的条件下装入一块板。请按比较组重新划分上样组，或减少复孔。 / Loading groups overlap comparison units beyond plate capacity. Align loading groups with comparison groups or reduce replicates.");
+    }
+  }
+  return [...merged.values()];
+}
+
 function generateComparisonPackings(
   samples: string[],
   sampleDesigns: PlanSampleDesign[],
@@ -1081,15 +1158,18 @@ function generateComparisonPackings(
   capacity: number,
   load: (plate: PackedPlate) => number,
   replicates: number,
+  stripSlots?: SampleIndexMap,
 ) {
-  const units = comparisonAllocationUnits(
+  let units = comparisonAllocationUnits(
     samples,
     sampleDesigns,
     targetGenes,
     capacity,
     load,
     replicates,
+    stripSlots,
   );
+  if (stripSlots) units = mergeStripAllocationUnits(units, stripSlots, capacity, load);
   const orders = [
     units.slice().sort(
       (left, right) =>
@@ -1513,22 +1593,38 @@ function materializePlate(
   fillDirection: LayoutFillDirection,
   sampleDesigns: PlanSampleDesign[],
   repeatingBridgeSamples: ReadonlySet<string>,
+  loadingUnit: LoadingUnit,
 ): PlannerPlate {
   const wells = emptyWells(rows, columns);
   const wellIndex = new Map(wells.map((well, index) => [well.wellId, index]));
   const rowOrder = loadingRowOrder(rows, loadingPattern);
   const blocksPerRow = Math.floor(columns / replicates);
-  const sampleIndices = new Map(
-    inputSamples.map((sample, index) => [sample, index]),
-  );
+  const sampleIndices = loadingUnit === "eight-strip"
+    ? loadingStripSlots(buildLoadingStrips(inputSamples, sampleDesigns))
+    : new Map(inputSamples.map((sample, index) => [sample, index]));
   const sampleDesignByName = new Map(
     sampleDesigns.map((design) => [design.name, design]),
   );
   const alignEachGene =
+    loadingUnit !== "eight-strip" &&
     strategy === "gene-major" &&
     loadingPattern === "interleaved-8-channel" &&
     fillDirection === "vertical";
   const alignedGeneBandColumns = new Map<string, Map<number, number>>();
+  const stripTiles = new Map<string, { lane: number; column: number }>();
+  if (loadingUnit === "eight-strip") {
+    const geneOrder = new Map<string, number>();
+    const tiles = new Map<string, { strip: number; gene: string }>();
+    for (const block of sequence) {
+      if (!geneOrder.has(block.gene)) geneOrder.set(block.gene, geneOrder.size);
+      const strip = Math.floor(sampleGlobalIndex(block.sample, sampleIndices) / 8);
+      tiles.set(groupKey(String(strip), block.gene), { strip, gene: block.gene });
+    }
+    [...tiles.entries()].sort(([, left], [, right]) => strategy === "sample-major"
+      ? left.strip - right.strip || geneOrder.get(left.gene)! - geneOrder.get(right.gene)!
+      : geneOrder.get(left.gene)! - geneOrder.get(right.gene)! || left.strip - right.strip
+    ).forEach(([key], index) => stripTiles.set(key, loadingTilePosition(index, rows / 8, blocksPerRow, fillDirection)));
+  }
   if (alignEachGene) {
     const geneBands = new Map<string, Set<number>>();
     for (const block of sequence) {
@@ -1556,7 +1652,12 @@ function materializePlate(
   sequence.forEach((block, blockIndex) => {
     let rowPosition: number;
     let blockColumn: number;
-    if (alignEachGene) {
+    if (loadingUnit === "eight-strip") {
+      const slot = sampleGlobalIndex(block.sample, sampleIndices);
+      const tile = stripTiles.get(groupKey(String(Math.floor(slot / 8)), block.gene))!;
+      rowPosition = tile.lane * 8 + slot % 8;
+      blockColumn = tile.column;
+    } else if (alignEachGene) {
       const globalIndex = sampleGlobalIndex(
         block.sample,
         sampleIndices,
@@ -1646,15 +1747,17 @@ export function planPlateLayout(
     options.loadingPattern,
   );
   const fillDirection = options.fillDirection ?? "vertical";
+  const loadingUnit = options.loadingUnit ?? "well";
   const strategies: LayoutStrategy[] = options.strategy
     ? [options.strategy]
-    : loadingPattern === "interleaved-8-channel"
+    : loadingUnit === "eight-strip" || loadingPattern === "interleaved-8-channel"
       ? ["gene-major"]
       : ["sample-major", "gene-major", "hybrid"];
-  const sampleIndices = new Map(
-    input.samples.map((sample, index) => [sample, index]),
-  );
+  const sampleIndices = loadingUnit === "eight-strip"
+    ? loadingStripSlots(buildLoadingStrips(input.samples, input.sampleDesigns))
+    : new Map(input.samples.map((sample, index) => [sample, index]));
   const usesInterleavedGeneBands =
+    loadingUnit !== "eight-strip" &&
     input.plateType === 384 &&
     loadingPattern === "interleaved-8-channel" &&
     fillDirection === "vertical";
@@ -1663,7 +1766,7 @@ export function planPlateLayout(
   );
   const standardLoad = (plate: PackedPlate) =>
     packedLoad(plate, input.referenceGenes.length);
-  const standardPackings = strategies.some(
+  const standardPackings = loadingUnit !== "eight-strip" && strategies.some(
     (strategy) => strategy !== "gene-major" || !usesInterleavedGeneBands,
   )
     ? hasComparisonGroups
@@ -1710,9 +1813,18 @@ export function planPlateLayout(
             input.dimensions.rows,
           )
       : [];
+  const stripCapacity = input.blocksPerRow * input.dimensions.rows / 8;
+  if (loadingUnit === "eight-strip" && input.referenceGenes.length + 1 > stripCapacity) {
+    throw new PlatePlannerError("E_STRIP_BUNDLE_TOO_LARGE", "完整八连排的目的基因与全部内参无法放入同板，请减少复孔或内参数量。 / A complete strip with one target and all references cannot fit; reduce replicates or references.");
+  }
+  const stripPackings = loadingUnit === "eight-strip" ? generateComparisonPackings(
+    input.samples, input.sampleDesigns, input.targetGenes, stripCapacity,
+    (plate) => geneBandLoad(plate, input.referenceGenes.length, 8, sampleIndices),
+    input.replicates * 8, sampleIndices,
+  ) : [];
   const candidates = strategies.flatMap((strategy) => {
     const packings =
-      strategy === "gene-major" && usesInterleavedGeneBands
+      loadingUnit === "eight-strip" ? stripPackings : strategy === "gene-major" && usesInterleavedGeneBands
         ? geneBandPackings
         : standardPackings;
     return packings
@@ -1726,7 +1838,7 @@ export function planPlateLayout(
         ),
       )
       .filter((candidate) =>
-        candidate.plateSequences.every(
+        loadingUnit === "eight-strip" || candidate.plateSequences.every(
           (sequence) =>
             requiredBlockColumns(
               sequence,
@@ -1786,6 +1898,7 @@ export function planPlateLayout(
       fillDirection,
       input.sampleDesigns,
       repeatingBridgeSamples,
+      loadingUnit,
     ),
   );
   const usedBlocks = best.plateSequences.reduce(
@@ -1813,6 +1926,7 @@ export function planPlateLayout(
 
   return {
     plates,
+    loadingUnit,
     strategy: best.strategy,
     loadingPattern,
     fillDirection,
@@ -2074,9 +2188,9 @@ export function validateLayout(
     members.push(design);
     comparisonGroups.set(key, members);
   }
-  const sampleIndices = new Map(
-    input.samples.map((sample, index) => [sample, index]),
-  );
+  const sampleIndices = result.loadingUnit === "eight-strip"
+    ? loadingStripSlots(buildLoadingStrips(input.samples, input.sampleDesigns))
+    : new Map(input.samples.map((sample, index) => [sample, index]));
   const comparisonUnitFits = (
     members: PlanSampleDesign[],
     gene: string,
@@ -2086,6 +2200,7 @@ export function validateLayout(
       plate,
       members.map((member) => ({ sample: member.name, gene })),
     );
+    if (result.loadingUnit === "eight-strip") return geneBandLoad(plate, input.referenceGenes.length, 8, sampleIndices) <= input.blocksPerRow * input.dimensions.rows / 8;
     return result.plates[0]?.rows === 16 &&
       result.loadingPattern === "interleaved-8-channel" &&
       result.strategy === "gene-major" &&

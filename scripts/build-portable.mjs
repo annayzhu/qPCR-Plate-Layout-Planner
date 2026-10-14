@@ -216,8 +216,12 @@ qPCR Plate Layout Planner | Offline Portable Edition
   Layout planning, reaction calculations, and Excel export work offline.
 - 384 孔板默认使用固定 9 mm 八道排枪隔行路径：先 A/C/E/G/I/K/M/O，再 B/D/F/H/J/L/N/P；使用 4.5 mm、自动化或单道设备时可切换为连续孔位。
   The 384-well default follows a fixed 9 mm 8-channel route: A/C/E/G/I/K/M/O, then B/D/F/H/J/L/N/P. Select sequential loading for 4.5 mm, automated, or single-channel workflows.
-- 隔行模式假设样本源板按输入顺序从 A–H 向下放置，再移到下一列。
-  Interleaved mode assumes the source plate follows the sample input order down A–H, then advances to the next column.
+- 上样组以八连排为单位，不足八位留空；下一组从新八连排的首位开始。Z/N 切换整组行进顺序，技术复孔仍在同一行从左到右连续。
+  Loading groups use eight-position strips, leaving unused positions empty. Each new group starts a new strip. Z/N changes strip traversal, while technical replicates remain contiguous left to right in one row.
+- 可使用滚轮或百分比调整板子视图，支持框选、拖动画布、调整视窗高度和全屏。技术复孔设置位于板布局预览旁。
+  Zoom the plate with the wheel or percentage input; box-select, pan, resize the viewport, or use fullscreen. Technical replicate settings are beside the layout preview.
+- Sample_cDNA 表按当前样本输入列表排序；仅手动添加到孔板、未出现在输入列表中的样本排在末尾。
+  Sample_cDNA follows the current sample input order; samples assigned manually only on the plate are appended.
 - 反应计算器默认按实际移取的 10 µM 引物液计算终浓度；默认 10 µL 体系、每条引物 0.2 µL 时，终浓度为 200 nM，配液余量为 12%。
   The calculator defaults to 10 µM primer solutions as pipetted. At 0.2 µL per primer in a 10 µL reaction, each primer is 200 nM final, with 12% pipetting overage.
 - 384 孔隔行布局可选择 A–H 八连排 gene mix 分装；每管按该通道实际孔数计算，Blank 替代水另行加入。

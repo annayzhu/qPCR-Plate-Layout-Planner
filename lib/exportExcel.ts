@@ -9,7 +9,9 @@ import type {
   LayoutFillDirection,
   LayoutStrategy,
   LoadingPattern,
+  LoadingUnit,
 } from "./platePlanner";
+import { buildLoadingStrips, loadingStripSlots } from "./loadingStrips";
 
 export type GeneType = "target" | "reference";
 export type LayoutSource = "auto" | "manual";
@@ -31,6 +33,7 @@ export interface ExportableWell {
 
 export interface ExportSampleDesign {
   name: string;
+  loadingGroup?: string;
   kind?: "sample" | "blank";
   cellLine?: string;
   comparisonGroup?: string;
@@ -48,12 +51,14 @@ export interface ExportablePlate {
 }
 
 export interface ExportContext {
+  loadingUnit?: LoadingUnit;
   plateType: 96 | 384;
   /** Physical loading route used to place samples into the destination plate. */
   loadingPattern?: LoadingPattern;
   fillDirection?: LayoutFillDirection;
   layoutStrategy?: LayoutStrategy;
   replicates: number;
+  /** Current input-list order, including any user drag-to-reorder changes. */
   samples: string[];
   targetGenes: string[];
   referenceGenes: string[];
@@ -196,6 +201,7 @@ function hasFixedSourcePlateMapping(context: ExportContext) {
 }
 
 function sourcePlateMappingLabel(context: ExportContext) {
+  if (context.loadingUnit === "eight-strip") return "上样组独立分成八连排，不足八位留空；复孔横向连续。N 先下后右，Z 先右后下；手动孔需复核。 / Loading groups start fresh 8-tube strips with unused channels empty. Replicates stay horizontal. N moves down first; Z moves right first. Review manual wells.";
   if (
     context.plateType !== 384 ||
     context.loadingPattern !== "interleaved-8-channel"
@@ -213,12 +219,26 @@ function sourcePlateMappingLabel(context: ExportContext) {
 function wellLoadingMetadata(
   well: ExportableWell,
   context: ExportContext,
+  stripSlots: ReadonlyMap<string, number>,
 ) {
   if (!well.sample || !well.gene) {
     return {
       transferPass: "",
       sourceRow: "",
       sampleGroup: "",
+    };
+  }
+
+  if (context.loadingUnit === "eight-strip") {
+    const slot = stripSlots.get(well.sample);
+    const interleaved = context.plateType === 384 && context.loadingPattern === "interleaved-8-channel";
+    const channel = interleaved ? Math.floor(well.row / 2) : well.row % 8;
+    const review = slot === undefined || well.source === "manual" || channel !== slot % 8;
+    const pass = interleaved ? well.row % 2 + 1 : Math.floor(well.row / 8) + 1;
+    return {
+      transferPass: `第 ${pass} 次 / Pass ${pass}`,
+      sourceRow: review ? "手动复核 / Review manual" : rowLabel(channel),
+      sampleGroup: review ? "手动规划 / Manual planning" : Math.floor(slot! / 8) + 1,
     };
   }
 
@@ -441,7 +461,8 @@ function appendReactionSheets(
     string,
     { count: number; blankCount: number; geneType: string }
   >();
-  const sampleCounts = new Map<string, number>();
+  // Seed the input order before counting wells. Manual-only names append naturally.
+  const sampleCounts = new Map(context.samples.map((sample) => [sample, 0]));
   for (const well of occupied) {
     if (well.gene) {
       const current = geneCounts.get(well.gene) ?? {
@@ -516,7 +537,9 @@ function appendReactionSheets(
     ...Array.from({ length: 8 }, () => ({ wch: 22 })),
   ];
 
-  const sampleRows = Array.from(sampleCounts.entries()).map(
+  const sampleRows = Array.from(sampleCounts.entries()).filter(
+    ([, wellCount]) => wellCount > 0,
+  ).map(
     ([sample, wellCount]) => {
       const isBlank = blankSampleSet.has(sample);
       const design = sampleDesignMap.get(sample.trim().toLocaleLowerCase());
@@ -844,11 +867,13 @@ export async function buildPlateWorkbook(
     }
   }
 
+  const sourceStrips = buildLoadingStrips(context.samples, context.sampleDesigns);
+  const stripSlots = loadingStripSlots(sourceStrips);
   const detailRows = plate.wells
     .slice()
     .sort((a, b) => a.row - b.row || a.column - b.column)
     .map((well) => {
-      const loadingMetadata = wellLoadingMetadata(well, context);
+      const loadingMetadata = wellLoadingMetadata(well, context, stripSlots);
       const sampleDesign = well.sample
         ? context.sampleDesigns?.find(
             (sample) =>
@@ -884,11 +909,12 @@ export async function buildPlateWorkbook(
         "布局来源 / Layout source":
           well.source === "manual" ? "手动 / Manual" : "自动 / Auto",
         "校验状态 / Validation": context.validationStatus,
+        ...(context.loadingUnit === "eight-strip" ? { "上样组 / Loading group": well.sample ? sampleDesign?.loadingGroup?.trim() || "默认组 / Default group" : "" } : {}),
       };
     });
   const detailSheet = XLSX.utils.json_to_sheet(detailRows);
   detailSheet["!autofilter"] = {
-    ref: `A1:R${Math.max(2, detailRows.length + 1)}`,
+    ref: `A1:${context.loadingUnit === "eight-strip" ? "S" : "R"}${Math.max(2, detailRows.length + 1)}`,
   };
   detailSheet["!cols"] = [
     { wch: 24 },
@@ -910,6 +936,7 @@ export async function buildPlateWorkbook(
     { wch: 15 },
     { wch: 18 },
   ];
+  if (context.loadingUnit === "eight-strip") detailSheet["!cols"].push({ wch: 24 });
 
   const summaryRows = [
     ["字段 / Field", "值 / Value"],
@@ -940,8 +967,8 @@ export async function buildPlateWorkbook(
     [
       "填充方向 / Fill direction",
       (context.fillDirection ?? "vertical") === "horizontal"
-        ? "横向优先 / Horizontal first"
-        : "纵向优先 / Vertical first",
+        ? (context.loadingUnit === "eight-strip" ? "Z：整条八连排先右后下 / Z: whole strips across first" : "横向优先 / Horizontal first")
+        : (context.loadingUnit === "eight-strip" ? "N：整条八连排先下后右 / N: whole strips down first" : "纵向优先 / Vertical first"),
     ],
     [
       "上样行序 / Loading row order",
@@ -1044,6 +1071,20 @@ export async function buildPlateWorkbook(
     plateScopeLabel(plate),
   );
   workbook.SheetNames = [...PLATE_WORKBOOK_SHEET_ORDER];
+  if (context.loadingUnit === "eight-strip") {
+    const present = new Set(plate.wells.flatMap((well) => well.sample ? [well.sample] : []));
+    const rows = sourceStrips.filter((strip) => strip.samples.some((sample) => present.has(sample))).map((strip) => ({
+      "八道样本组 / 8-channel sample group": strip.index + 1,
+      "上样组 / Loading group": strip.group || "默认组 / Default group",
+      "组内八连排 / Strip within group": strip.groupStripIndex + 1,
+      ...Object.fromEntries(Array.from({ length: 8 }, (_, channel) => [rowLabel(channel), strip.samples[channel] ?? "留空 / Empty"])),
+    }));
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet["!cols"] = Array.from({ length: 11 }, () => ({ wch: 24 }));
+    sheet["!autofilter"] = { ref: sheet["!ref"]! };
+    XLSX.utils.book_append_sheet(workbook, sheet, "Source_Strips");
+    workbook.SheetNames = [...workbook.SheetNames.slice(0, 2), "Source_Strips", ...workbook.SheetNames.slice(2, -1)];
+  }
   return { XLSX, workbook };
 }
 

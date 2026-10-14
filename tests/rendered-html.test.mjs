@@ -37,15 +37,21 @@ test("server-renders the qPCR plate planner shell", async () => {
   assert.match(html, /96 \/ 384 孔 · 排板与反应用量/);
   assert.match(html, /选择孔板/);
   assert.match(html, /样本与对照/);
-  assert.match(html, /逐行设置名称与类型；细胞系和比较组可选/);
+  assert.match(html, /按组上样，不足八位留空/);
+  assert.match(html, /新添加的样本归入此组/);
   assert.match(html, /添加一行/);
   assert.match(html, /添加检测基因/);
   assert.match(html, /逐行设置名称及目的\/内参类型/);
   assert.match(html, /技术复孔/);
+  const sidebarHtml = html.match(/<aside\b[^>]*>[\s\S]*?<\/aside>/)?.[0] ?? "";
+  const workspaceHtml = html.match(/<main\b[^>]*>[\s\S]*?<\/main>/)?.[0] ?? "";
+  assert.doesNotMatch(sidebarHtml, /id="technical-replicates"/);
+  assert.match(workspaceHtml, /id="technical-replicates"/);
+  assert.equal((html.match(/id="technical-replicates"/g) ?? []).length, 1);
   assert.match(html, /按样本排列/);
   assert.match(html, /按基因排列/);
-  assert.match(html, /纵向优先/);
-  assert.match(html, /横向优先/);
+  assert.match(html, /N · 先下后右/);
+  assert.match(html, /Z · 先右后下/);
   assert.match(html, /生成布局/);
   assert.match(html, /重置工具/);
   assert.match(html, /参数编辑/);
@@ -76,23 +82,25 @@ test("declares the conditional reaction calculator scroll region", async () => {
 
 test("declares the conditional plate box-selection affordance", async () => {
   const source = await readFile(
-    new URL("../app/QpcrPlanner.tsx", import.meta.url),
+    new URL("../app/PlateViewport.tsx", import.meta.url),
     "utf8",
   );
-  assert.match(source, /拖动框选/);
+  assert.match(source, /框选/);
   assert.match(source, /className="well-selection-box"/);
 });
 
 test("declares plate copy, paste, restore, and zoom editing affordances", async () => {
-  const [source, styles] = await Promise.all([
+  const [source, styles, viewport] = await Promise.all([
     readFile(new URL("../app/QpcrPlanner.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/PlateViewport.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(source, /复制所选孔（⌘\/Ctrl \+ C）/);
   assert.match(source, /粘贴到所选起始孔（⌘\/Ctrl \+ V）/);
   assert.match(source, /恢复所选/);
-  assert.match(source, /孔板视图缩放/);
-  assert.match(styles, /\.selection-toolbar\s*\{[^}]*position:\s*sticky/s);
+  assert.match(viewport, /孔板缩放百分比/);
+  assert.match(viewport, /适合窗口/);
+  assert.match(styles, /\.plate-viewport-tools\s*\{[^}]*position:\s*sticky/s);
 });
 
 test("keeps long plate sample lists collapsed behind a compact summary", async () => {

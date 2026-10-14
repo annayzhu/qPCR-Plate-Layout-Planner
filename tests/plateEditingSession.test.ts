@@ -66,6 +66,8 @@ test("copy and paste is one editing scenario with recalculation and undo", () =>
   assert.equal(pasted.outcome.status, "applied");
   session = pasted.session;
   assert.equal(session.confirmedPlateNumbers.has(1), false);
+  assert.equal(session.undoStack.at(-1)?.patch.wells.length, 1);
+  assert.equal(session.undoStack.at(-1)?.patch.wells[0].wellId, "H12");
   assert.equal(
     session.plan.plates[0].wells.find((well) => well.wellId === "H12")
       ?.source,
