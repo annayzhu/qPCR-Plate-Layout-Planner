@@ -3162,3 +3162,16 @@ select:focus-visible,
     animation-iteration-count: 1 !important;
   }
 }
+
+/* Full plate first; ordinary scrolling continues to the mix below it. */
+.plate-scroll{height:clamp(220px,calc(100dvh - 395px),620px);min-height:220px;overscroll-behavior:auto}
+.workflow-mix-summary{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 16px;border-top:1px solid var(--border);font-size:13px}
+.workflow-mix-summary>span{flex:1}.workflow-mix-summary>label{width:100%}.workflow-mix-summary textarea{width:100%;min-height:140px}
+@media(min-width:1181px){.workspace{grid-template-columns:320px minmax(0,1fr)}.plate-viewport-tools{position:static}.main-area{padding:16px}.plate-scroll{overflow:auto}.plate-view-help{display:none}}
+html:has(body .app-shell) .topbar .brand-subtitle{display:none}
+:root{--canvas:#f5f7f4;--surface:#fff;--surface-soft:#eef1ec;--surface-raised:#fafbf8;--ink:#202825;--ink-secondary:#4d5955;--ink-tertiary:#6f7a76;--border:#dfe5e1;--border-strong:#c8d2cd;--action:#3f625d;--action-hover:#34534f;--action-soft:#eaf1ef;--manual:#526d73;--focus:#3f625d;--radius-card:8px;--radius-control:6px;--shadow:none}
+html[data-labnest-embedded] .topbar,html[data-labnest-embedded] .app-footer{display:none}
+html[data-labnest-embedded] .workspace{height:100dvh}
+.validation-bar[hidden]{display:none!important}
+
+.workflow-sample-file{font-size:12px;margin:8px 0}.workflow-sample-file label{display:block;margin:8px 0}.workflow-sample-file input[type=checkbox]{width:auto}.workflow-sample-file input[type=file]{max-width:100%}

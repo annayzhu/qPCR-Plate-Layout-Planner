@@ -1,4 +1,8 @@
 "use client";
+import { SampleFileImport } from "./SampleFileImport";
+import { useWorkflowBridge } from "./workflow-bridge";
+import { plannerWorkflowOutput } from "@/lib/workflowOutput";
+import { serializePlannerSession, restorePlannerSession } from "@/lib/plannerSession";
 
 import {
   AlertTriangle,
@@ -342,6 +346,20 @@ export function QpcrPlanner() {
   useEffect(() => {
     plannerSessionRef.current = plannerSession;
   }, [plannerSession]);
+  const [mixCopied,setMixCopied]=useState(false);
+  const [copyFallback,setCopyFallback]=useState('');
+  const bridgeState=useMemo(()=>JSON.parse(serializePlannerSession(plannerSession)),[plannerSession]);
+  useWorkflowBridge(bridgeState,context=>{
+    if(context.state){const restored=restorePlannerSession(JSON.stringify(context.state));if(!restored.ok)throw new Error('方案格式不兼容');replacePlannerSession(restored.session);}
+    else if(context.samples?.length){const names=context.samples.map(sample=>sample.name);replacePlannerSession(createPlannerSession({samples:context.samples.map(sample=>({...sample,name:names.filter(name=>name===sample.name).length>1?`${sample.name} [${sample.id.slice(-6)}]`:sample.name}))}));}
+    setHydrated(true);
+  },()=>plannerWorkflowOutput(plannerSessionRef.current));
+  async function copyMix(){
+    try{const result=plannerWorkflowOutput(plannerSessionRef.current);const html='<table>'+result.mixTsv.split('\n').map(line=>line.split('\t')).map(row=>'<tr>'+row.map(cell=>'<td>'+cell.replaceAll('&','&amp;').replaceAll('<','&lt;')+'</td>').join('')+'</tr>').join('')+'</table>';
+      if(navigator.clipboard?.write && typeof ClipboardItem!=='undefined')await navigator.clipboard.write([new ClipboardItem({'text/plain':new Blob([result.mixTsv],{type:'text/plain'}),'text/html':new Blob([html+'<p>'+result.method+'</p>'],{type:'text/html'})})]);else await navigator.clipboard.writeText(result.mixTsv);
+      setMixCopied(true);setTimeout(()=>setMixCopied(false),2000);
+    }catch{try{setCopyFallback(plannerWorkflowOutput(plannerSessionRef.current).mixTsv);}catch{}}
+  }
   const [draggedEntry, setDraggedEntry] = useState<DraggedEntry | null>(null);
   const [dropTarget, setDropTarget] = useState<DraggedEntry | null>(null);
   const [sampleInput, setSampleInput] = useState("");
@@ -729,6 +747,7 @@ export function QpcrPlanner() {
   );
 
   useEffect(() => {
+    if (new URLSearchParams(location.search).has("session")) { setHydrated(true); return; }
     const restoreTimer = window.setTimeout(() => {
       try {
         const restored = loadPlannerDraft(window.localStorage);
@@ -2225,6 +2244,7 @@ export function QpcrPlanner() {
                     }`,
                   )}
                 </button>
+                <SampleFileImport onImport={names=>setSamplePaste(names.join("\n"))}/>
                 <form className="quick-fill-row" onSubmit={submitQuickSamples}>
                   <input
                     className="quick-fill-input"
@@ -3269,7 +3289,7 @@ export function QpcrPlanner() {
                 onClick={() => reactionDialogRef.current?.showModal()}
               >
                 <Calculator size={15} />
-                {tr("反应体系", "Reaction setup")}
+                {tr("配液", "Reaction mix")}
               </button>
               </div>
             </div>
@@ -4042,7 +4062,14 @@ export function QpcrPlanner() {
                       ))}
                   </PlateViewport>
 
+                  <div className="workflow-mix-summary">
+                    <span>{tr(`全部 ${layout.plates.length} 板 · ${reactionCalculation.totalWells} 反应 · ${reactionCalculation.totals.recommendedReactionUl.toFixed(1)} µL（含余量）`, `All ${layout.plates.length} plates · ${reactionCalculation.totalWells} reactions · ${reactionCalculation.totals.recommendedReactionUl.toFixed(1)} µL with overage`)}</span>
+                    <button type="button" className="button button-soft" onClick={()=>reactionDialogRef.current?.showModal()}>{tr('查看配液','Reaction mix')}</button>
+                    <button type="button" className="button button-soft" disabled={settingsStale || !reactionCalculation.valid} onClick={()=>void copyMix()}>{mixCopied?tr('已复制','Copied'):tr('复制配液','Copy mix')}</button>
+                    {copyFallback?<label>{tr('复制文本','Copy text')}<textarea readOnly value={copyFallback} onFocus={event=>event.target.select()}/></label>:null}
+                  </div>
                   <div
+                    hidden={!settingsStale && activeIssues.length === 0}
                     className={`validation-bar ${
                       activeInvalid
                         ? "invalid"

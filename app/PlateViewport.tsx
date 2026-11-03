@@ -55,8 +55,8 @@ export function PlateViewport({
   const viewportRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(1);
-  // Start at readable size. Fitting every well on screen is an explicit overview action.
-  const fitRef = useRef(false);
+  // Fit the current complete plate until the user explicitly changes the scale.
+  const fitRef = useRef(true);
   const dragRef = useRef<Drag | null>(null);
   const suppressClickRef = useRef(false);
   const cancelPercentRef = useRef(false);
@@ -141,23 +141,13 @@ export function PlateViewport({
         if (fitRef.current) fitPlate();
       });
     });
+    fitRef.current = true;
     observer.observe(viewport);
-    const wheel = (event: WheelEvent) => {
-      if (!event.deltaY || dragRef.current) return;
-      event.preventDefault();
-      event.stopPropagation();
-      fitRef.current = false;
-      const delta = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1);
-      changeZoom(zoomRef.current * Math.exp(-Math.max(-150, Math.min(150, delta)) * 0.002), {
-        x: event.clientX, y: event.clientY,
-      });
-    };
-    // A native, non-passive listener prevents the page from scrolling during zoom.
-    viewport.addEventListener("wheel", wheel, { passive: false });
+    requestAnimationFrame(fitPlate);
     return () => {
       observer.disconnect();
       cancelAnimationFrame(resizeFrame);
-      viewport.removeEventListener("wheel", wheel);
+
     };
   }, [fitPlate, changeZoom, rows, columns]);
 
