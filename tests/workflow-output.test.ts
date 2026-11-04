@@ -15,3 +15,9 @@ test('complete mix copy uses actual wells, includes units and cannot publish sta
  session=dispatchPlannerSession(session,{type:'patch-setup',patch:{replicates:2}}).session;
  assert.throws(()=>plannerWorkflowOutput(session));
 });
+test('the shared reaction system gives the same volumes as LabNest calculators (Q402)',()=>{
+ let session=createPlannerSession({samples:Array.from({length:8},(_,i)=>({id:`s${i}`,name:`S${i}`,kind:'sample' as const})),genes:[{id:'g1',name:'G1',role:'target'},{id:'r1',name:'REF',role:'reference'}],replicates:3});
+ session=dispatchPlannerSession(session,{type:'generate-layout',generatedAt:'2026-11-03T00:00:00.000Z'}).session;
+ const row=plannerWorkflowOutput(session).table.rows[0];
+ assert.deepEqual(row.slice(1),['24','0','241.92','134.4','5.376','5.376','96.768']);
+});
