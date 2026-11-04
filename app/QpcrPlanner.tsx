@@ -8,6 +8,8 @@ import {
   AlertTriangle,
   Beaker,
   Calculator,
+  PanelLeftClose,
+  PanelLeftOpen,
   Check,
   ChevronDown,
   ChevronUp,
@@ -352,6 +354,7 @@ export function QpcrPlanner() {
   useWorkflowBridge(bridgeState,context=>{
     if(context.state){const restored=restorePlannerSession(JSON.stringify(context.state));if(!restored.ok)throw new Error('方案格式不兼容');replacePlannerSession(restored.session);}
     else if(context.samples?.length){const names=context.samples.map(sample=>sample.name);replacePlannerSession(createPlannerSession({samples:context.samples.map(sample=>({...sample,name:names.filter(name=>name===sample.name).length>1?`${sample.name} [${sample.id.slice(-6)}]`:sample.name}))}));}
+    if(context.language)setLanguage(context.language);
     setHydrated(true);
   },()=>plannerWorkflowOutput(plannerSessionRef.current));
   async function copyMix(){
@@ -403,6 +406,8 @@ export function QpcrPlanner() {
   const generatedAt = plannerSession.generatedAt;
   const reactionSystem = plannerSession.reactionSystem;
   const language = plannerSession.language;
+  const [inputsCollapsed, setInputsCollapsed] = useState(false);
+  const [samplesCollapsed, setSamplesCollapsed] = useState(true);
   const entryHistory = plannerSession.entryHistory;
   const layout = editingSession?.plan ?? null;
   const confirmed = useMemo(
@@ -2072,7 +2077,7 @@ export function QpcrPlanner() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className={`workspace ${inputsCollapsed ? "inputs-collapsed" : ""}`}>
         <aside
           className="sidebar"
           data-scroll-region="setup"
@@ -2083,14 +2088,8 @@ export function QpcrPlanner() {
             role="toolbar"
             aria-label={tr("参数编辑历史", "Setup edit history")}
           >
-            <span>
+            <span title={tr("⌘/Ctrl+Z 撤销 · 列表可拖动排序", "⌘/Ctrl+Z undo · Lists can be dragged to reorder")}>
               {tr("参数编辑", "Setup edits")}
-              <small>
-                {tr(
-                  "⌘/Ctrl+Z 撤销 · 列表可拖动排序",
-                  "⌘/Ctrl+Z undo · Lists can be dragged to reorder",
-                )}
-              </small>
             </span>
             <div>
               <button
@@ -2274,7 +2273,7 @@ export function QpcrPlanner() {
               </div>
               {samples.length > 0 && (
                 <div
-                  className="sample-list"
+                  className={`sample-list ${samplesCollapsed && samples.length > 8 ? "is-collapsed" : ""}`}
                   aria-label={tr("已添加样本", "Added samples")}
                 >
                   <p className="entry-order-help">
@@ -2561,6 +2560,7 @@ export function QpcrPlanner() {
                   ))}
                 </div>
               )}
+              {samples.length > 8 && <button type="button" className="button button-quiet sample-list-toggle" aria-expanded={!samplesCollapsed} onClick={() => setSamplesCollapsed((value) => !value)}>{samplesCollapsed ? tr(`显示全部 ${samples.length} 个样本`, `Show all ${samples.length} samples`) : tr("收起样本列表", "Collapse sample list")}</button>}
               <button type="button" className="button button-quiet comparison-disclosure" aria-expanded={showComparisonFields} onClick={() => setShowComparisonFields((value) => !value)}>{showComparisonFields ? tr("收起比较组设置", "Hide comparison settings") : tr("细胞系 / 比较组 / 桥接", "Cell line / comparison / bridge")}</button>
               {loadingUnit === "eight-strip" && loadingStrips.length > 0 && <details className="strip-summary">
                 <summary>{tr(`${loadingStrips.length} 条八连排 · 留空 ${loadingStrips.length * 8 - sampleNames.length} 位`, `${loadingStrips.length} source strips · ${loadingStrips.length * 8 - sampleNames.length} empty channels`)}</summary>
@@ -3232,7 +3232,7 @@ export function QpcrPlanner() {
           <section className="hero-strip" aria-labelledby="planner-title">
             <div className="preview-heading">
               <div className="preview-heading-copy">
-                <h1 className="hero-title" id="planner-title">{tr("版布局预览", "Layout preview")}</h1>
+                <h1 className="hero-title" id="planner-title">{tr("板布局", "Plate layout")}</h1>
                 <span className="preview-status">
                   {layout
                     ? tr(`已生成 ${layout.plates.length} 块板`, `${layout.plates.length} plate(s)`)
@@ -3240,6 +3240,15 @@ export function QpcrPlanner() {
                 </span>
               </div>
               <div className="preview-actions">
+                <button
+                  className="button button-quiet inputs-toggle"
+                  type="button"
+                  aria-pressed={inputsCollapsed}
+                  onClick={() => setInputsCollapsed((value) => !value)}
+                >
+                  {inputsCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+                  {inputsCollapsed ? tr("显示输入", "Show inputs") : tr("收起输入", "Hide inputs")}
+                </button>
                 <div
                   className="replicate-control"
                   title={tr("复孔同行从左到右连续，例如 3 复孔：A1–A3", "Replicates stay contiguous left-to-right within one row, e.g. triplicates at A1–A3")}
@@ -3645,6 +3654,26 @@ export function QpcrPlanner() {
                     </div>
                   </div>
 
+                  <PlateViewport
+                    key={activePlate.id}
+                    name={activePlate.name}
+                    rows={activePlate.rows}
+                    columns={activePlate.columns}
+                    language={language}
+                    editable={!activePlateConfirmed && !settingsStale}
+                    moveMode={moveMode}
+                    selectedWellIds={selectedWellIds}
+                    describeWell={(wellId) => {
+                      const well = activePlate.wells.find((well) => well.wellId === wellId);
+                      return well ? describePlateWell(well, Boolean(well.sample && blankSampleSet.has(well.sample)), language) : "";
+                    }}
+                    onSelect={(wellIds) => runPlateEdit({
+                      type: "select",
+                      plateNumber: activePlate.plateNumber,
+                      wellIds,
+                      mode: "replace",
+                    })}
+                    legend={<>
                   <div className="plate-context">
                     <div
                       className="legend"
@@ -3725,25 +3754,7 @@ export function QpcrPlanner() {
                       </details>
                     )}
 
-                  <PlateViewport
-                    key={activePlate.id}
-                    name={activePlate.name}
-                    rows={activePlate.rows}
-                    columns={activePlate.columns}
-                    language={language}
-                    editable={!activePlateConfirmed && !settingsStale}
-                    moveMode={moveMode}
-                    selectedWellIds={selectedWellIds}
-                    describeWell={(wellId) => {
-                      const well = activePlate.wells.find((well) => well.wellId === wellId);
-                      return well ? describePlateWell(well, Boolean(well.sample && blankSampleSet.has(well.sample)), language) : "";
-                    }}
-                    onSelect={(wellIds) => runPlateEdit({
-                      type: "select",
-                      plateNumber: activePlate.plateNumber,
-                      wellIds,
-                      mode: "replace",
-                    })}
+                    </>}
                     editingToolbar={<div className={`selection-toolbar ${selectedWellIds.length === 0 && undoStack.length === 0 && redoStack.length === 0 ? "is-idle" : ""}`} aria-live="polite">
                     <span>
                       {selectedWellIds.length > 0

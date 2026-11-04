@@ -21,6 +21,7 @@ interface PlateViewportProps {
   moveMode: boolean;
   selectedWellIds: string[];
   editingToolbar: ReactNode;
+  legend?: ReactNode;
   describeWell: (wellId: string) => string;
   onSelect: (wellIds: string[]) => void;
   children: ReactNode;
@@ -43,17 +44,20 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 2;
 const MIN_HEIGHT = 320;
 const MAX_HEIGHT = 1600;
+// A large window may enlarge the fitted plate so the labels gain room; explicit zoom keeps its own limit.
+const MAX_FIT_ZOOM = 1.6;
 const clampZoom = (value: number) => Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, value));
 const clampHeight = (value: number) => Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, value));
 
 /** View-only interactions live here; assignments and undo remain in the editing session. */
 export function PlateViewport({
-  name, rows, columns, language, editable, moveMode, selectedWellIds, editingToolbar, describeWell, onSelect, children,
+  name, rows, columns, language, editable, moveMode, selectedWellIds, editingToolbar, legend, describeWell, onSelect, children,
 }: PlateViewportProps) {
   const viewportId = useId();
   const workspaceRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef(1);
   // Fit the current complete plate until the user explicitly changes the scale.
   const fitRef = useRef(true);
@@ -62,6 +66,7 @@ export function PlateViewport({
   const cancelPercentRef = useRef(false);
   const resizeRef = useRef<{ y: number; height: number } | null>(null);
   const [height, setHeight] = useState<number | null>(null);
+  const [autoHeight, setAutoHeight] = useState<number | null>(null);
   const [measuredHeight, setMeasuredHeight] = useState(0);
   const [inspectedWellId, setInspectedWellId] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
@@ -123,7 +128,7 @@ export function PlateViewport({
     const unscaledWidth = bounds.width / zoomRef.current;
     const unscaledHeight = bounds.height / zoomRef.current;
     if (!unscaledWidth || !unscaledHeight) return;
-    changeZoom(Math.min(1, width / unscaledWidth, height / unscaledHeight));
+    changeZoom(Math.min(MAX_FIT_ZOOM, (width - 1) / unscaledWidth, (height - 1) / unscaledHeight));
     viewport.scrollLeft = 0;
     viewport.scrollTop = 0;
     fitRef.current = true;
@@ -150,6 +155,25 @@ export function PlateViewport({
 
     };
   }, [fitPlate, changeZoom, rows, columns]);
+
+  // The plate takes what the column has left, keeping the mix summary in view below it.
+  useEffect(() => {
+    const stage = stageRef.current!;
+    const column = stage.closest<HTMLElement>(".main-area");
+    if (!column) return;
+    const measure = () => {
+      if (!/(auto|scroll)/.test(getComputedStyle(column).overflowY)) { setAutoHeight(null); return; }
+      const columnBounds = column.getBoundingClientRect();
+      const offset = stage.getBoundingClientRect().top - columnBounds.top + column.scrollTop;
+      const below = (workspaceRef.current?.nextElementSibling as HTMLElement | null)?.offsetHeight ?? 0;
+      const handle = stage.nextElementSibling instanceof HTMLElement ? stage.nextElementSibling.offsetHeight : 0;
+      setAutoHeight(clampHeight(column.clientHeight - offset - below - handle - parseFloat(getComputedStyle(column).paddingBottom)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(column);
+    return () => observer.disconnect();
+  }, [rows, columns]);
 
   function commitPercent() {
     if (cancelPercentRef.current) {
@@ -246,7 +270,6 @@ export function PlateViewport({
       if (event.key === "Escape" && fullscreen) { event.stopPropagation(); void toggleFullscreen(); }
     }}>
       <div className="plate-viewport-tools">
-      {editingToolbar}
       <div className="plate-view-toolbar">
         <div className="plate-view-modes" role="group" aria-label={tr("孔板操作方式", "Plate interaction mode")}>
           {fullscreen && <strong className="fullscreen-plate-name">{name}</strong>}
@@ -274,23 +297,29 @@ export function PlateViewport({
           </button>
         </div>
       </div>
-      <div className="well-inspector">
-        <span className="well-inspector-label">{tr("孔位信息", "Well details")}</span>
-        <span>{inspection || tr("悬停或点选孔位，查看完整样本和基因名称。", "Hover or select a well to read the full sample and assay names.")}</span>
+      {fullscreenError && <p className="plate-view-help" role="alert">{tr("浏览器未允许全屏，可拖动孔板下方的手柄调整高度。", "Full screen is unavailable. Drag the handle below the plate to resize it.")}</p>}
       </div>
-      {fullscreenError && <p className="plate-view-help" role="alert">{tr("浏览器未允许全屏，请使用底部手柄调整视区高度。", "Full screen is unavailable. Use the bottom handle to resize the viewport.")}</p>}
-      </div>
-      <div id={viewportId} ref={viewportRef} className={`plate-scroll ${panMode ? "pan-mode" : "select-mode"}`} data-plate-zoom={zoom.toFixed(3)} style={{ height: fullscreen ? undefined : height ?? undefined }}
+      <div ref={stageRef} className="plate-stage">
+      <div id={viewportId} ref={viewportRef} className={`plate-scroll ${panMode ? "pan-mode" : "select-mode"}`} data-plate-zoom={zoom.toFixed(3)} style={{ height: fullscreen ? undefined : height ?? autoHeight ?? undefined }}
         onPointerDown={beginDrag} onPointerMove={updateDrag} onPointerUp={(event) => finishDrag(event)} onPointerCancel={(event) => finishDrag(event, true)}
         onPointerOver={(event) => inspectWell(event.target)} onFocusCapture={(event) => inspectWell(event.target)}
         onPointerLeave={() => { setInspectedWellId(null); if (!dragRef.current?.active) dragRef.current = null; }}
         onClickCapture={(event) => { if (suppressClickRef.current || panMode) { event.preventDefault(); event.stopPropagation(); } }}
         onDoubleClickCapture={(event) => { if (panMode) { event.preventDefault(); event.stopPropagation(); } }}
-        title={tr("滚轮缩放 · 拖动框选 · ⌘/Ctrl 加选", "Wheel to zoom · Drag to select · ⌘/Ctrl to add")}>
+        title={tr("拖动框选 · ⌘/Ctrl 加选 · 双击编辑", "Drag to select · ⌘/Ctrl to add · Double-click to edit")}>
         <div ref={gridRef} className={`plate-grid ${rows === 16 ? "plate-384" : ""} ${moveMode ? "move-mode" : ""} ${box ? "is-box-selecting" : ""}`} style={{ "--plate-columns": columns, zoom } as CSSProperties} role="grid" aria-label={tr(`${name} 孔板布局`, `${name} plate layout`)}>
           {box && <span className="well-selection-box" aria-hidden="true" style={box} />}
           {children}
         </div>
+      </div>
+      <aside className="plate-aside" aria-label={tr("孔板信息", "Plate details")}>
+        <div className="well-inspector">
+          <span className="well-inspector-label">{tr("孔位信息", "Well details")}</span>
+          <span>{inspection || tr("悬停或点选孔位，查看完整样本和基因名称。", "Hover or select a well to read the full sample and assay names.")}</span>
+        </div>
+        {editingToolbar}
+        {legend}
+      </aside>
       </div>
       {!fullscreen && <div className="plate-height-handle" role="separator" tabIndex={0} aria-orientation="horizontal" aria-controls={viewportId}
         aria-label={tr("调整孔板视区高度", "Resize plate viewport height")} aria-valuemin={MIN_HEIGHT} aria-valuemax={MAX_HEIGHT} aria-valuenow={measuredHeight || undefined}
@@ -319,9 +348,8 @@ export function PlateViewport({
           else if (event.key === "End") setHeight(MAX_HEIGHT);
           else setHeight(clampHeight(viewportRef.current!.getBoundingClientRect().height + (event.key === "ArrowDown" ? 40 : -40)));
         }}>
-        <GripHorizontal size={18} /><span>{tr("拖动调整高度 · 双击还原", "Drag to resize · Double-click to reset")}</span>
+        <GripHorizontal size={14} aria-hidden="true" />
       </div>}
-      <p className="plate-view-help">{tr("滚轮缩放 · 拖动框选 · ⌘/Ctrl 加选 · 双击编辑。整板缩略图用于定位，核对文字请用 100% 阅读。", "Wheel to zoom · Drag to select · ⌘/Ctrl to add · Double-click to edit. Use Fit plate for an overview and 100% detail to read labels.")}</p>
     </div>
   );
 }

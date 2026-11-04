@@ -14,7 +14,11 @@ export type WorkflowContext = {
         sessionAttachmentId: string;
     }>;
     title?: string;
+    language?: 'zh' | 'en';
 };
+// Inside LabNest the host provides the title row, so the tool drops its own name.
+if (typeof window !== 'undefined' && window.parent !== window)
+    document.documentElement.dataset.labnestHosted = 'true';
 export function useWorkflowBridge(state: unknown, restore: (context: WorkflowContext) => void, output: () => unknown | Promise<unknown>) {
     const callbacks = useRef({ state, restore, output });
     callbacks.current = { state, restore, output };
