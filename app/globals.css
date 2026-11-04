@@ -3164,7 +3164,7 @@ select:focus-visible,
 }
 
 /* Full plate first; ordinary scrolling continues to the mix below it. */
-.plate-scroll{height:clamp(320px,calc(100dvh - 260px),900px);min-height:320px;overscroll-behavior:auto}
+.plate-scroll{height:var(--plate-viewport-height,clamp(320px,calc(100dvh - 260px),900px));min-height:320px;overscroll-behavior:auto}
 .workflow-mix-summary{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 16px;border-top:1px solid var(--border);font-size:13px}
 .workflow-mix-summary>span{flex:1}.workflow-mix-summary>label{width:100%}.workflow-mix-summary textarea{width:100%;min-height:140px}
 html:has(body .app-shell) .topbar .brand-subtitle{display:none}
@@ -3279,4 +3279,33 @@ html[data-labnest-hosted] .topbar{min-height:52px;padding-block:6px}
   .plate-stage{grid-template-columns:minmax(0,1fr) 196px}
   .plate-actions .button{padding-inline:8px}
   .inputs-toggle{font-size:0;gap:0}
+}
+
+.manual-well-full-name{display:block;overflow-wrap:anywhere;font-size:12px;line-height:1.5;color:var(--ink-secondary)}
+.edit-sheet .input,.edit-sheet .select{font-size:13px;min-width:0}
+
+.workflow-sample-file>summary{cursor:pointer;color:var(--ink-secondary)}
+.workflow-sample-file>button{margin-top:8px}.workflow-sample-file .sample-import-header{display:flex;align-items:center;gap:8px}
+.sample-import-filename,.sample-import-preview{overflow-wrap:anywhere;line-height:1.5}.sample-import-fields{display:grid;gap:8px}
+
+.edit-sheet .field-label{font-size:12px}
+.edit-sheet .modal-description,.edit-sheet .segmented button{font-size:12px}
+body:has(.edit-sheet) .toast{top:12px;bottom:auto}
+
+.sample-import-fields .select{font-size:13px}
+
+/* Detail wrapping must not size the plate row or move the controls beneath it. */
+@media screen and (min-width:1024px){
+  .plate-aside{contain:size;min-height:0;scrollbar-gutter:stable}
+  .plate-aside>*{flex-shrink:0}
+  .plate-aside .well-inspector{min-block-size:calc(5lh + 4px)}
+}
+
+/* A stacked plate sizes its viewport from the fitted content, not the window height. */
+@media screen and (max-width:1023px){
+  .plate-viewport:not(.is-fullscreen) .plate-scroll{height:auto;min-height:0}
+  .plate-viewport:not(.is-fullscreen) .plate-height-handle{display:none}
+  .plate-aside .selection-toolbar{justify-content:stretch}
+  .plate-aside .selection-actions{grid-template-columns:repeat(auto-fit,minmax(112px,1fr));width:100%;min-width:0}
+  .plate-aside .selection-actions .button{min-height:44px;white-space:normal}
 }

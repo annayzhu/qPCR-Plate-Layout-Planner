@@ -128,7 +128,10 @@ export function PlateViewport({
     const unscaledWidth = bounds.width / zoomRef.current;
     const unscaledHeight = bounds.height / zoomRef.current;
     if (!unscaledWidth || !unscaledHeight) return;
-    changeZoom(Math.min(MAX_FIT_ZOOM, (width - 1) / unscaledWidth, (height - 1) / unscaledHeight));
+    const widthFit = (width - 1) / unscaledWidth;
+    const stacked = getComputedStyle(stageRef.current!).gridTemplateColumns.trim().split(/\s+/).length === 1;
+    const isFullscreen = Boolean(document.fullscreenElement?.contains(workspaceRef.current));
+    changeZoom(Math.min(MAX_FIT_ZOOM, widthFit, stacked && !isFullscreen ? Infinity : (height - 1) / unscaledHeight));
     viewport.scrollLeft = 0;
     viewport.scrollTop = 0;
     fitRef.current = true;
@@ -167,7 +170,15 @@ export function PlateViewport({
       const offset = stage.getBoundingClientRect().top - columnBounds.top + column.scrollTop;
       const below = (workspaceRef.current?.nextElementSibling as HTMLElement | null)?.offsetHeight ?? 0;
       const handle = stage.nextElementSibling instanceof HTMLElement ? stage.nextElementSibling.offsetHeight : 0;
-      setAutoHeight(clampHeight(column.clientHeight - offset - below - handle - parseFloat(getComputedStyle(column).paddingBottom)));
+      const viewport = viewportRef.current!;
+      const style = getComputedStyle(viewport);
+      const grid = gridRef.current!.getBoundingClientRect();
+      const availableWidth = viewport.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const contentHeight = grid.width > 0
+        ? Math.ceil((availableWidth - 1) * grid.height / grid.width + parseFloat(style.paddingTop) + parseFloat(style.paddingBottom) + 1)
+        : MAX_HEIGHT;
+      const availableHeight = clampHeight(column.clientHeight - offset - below - handle - parseFloat(getComputedStyle(column).paddingBottom));
+      setAutoHeight(Math.min(availableHeight, contentHeight));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -192,7 +203,7 @@ export function PlateViewport({
 
   function inspectWell(target: EventTarget) {
     const well = (target as Element).closest<HTMLElement>("button[data-well-id]");
-    setInspectedWellId(well?.dataset.wellId ?? null);
+    if (well) setInspectedWellId(well.dataset.wellId ?? null);
   }
 
   function pointInGrid(event: PointerEvent<HTMLDivElement>) {
@@ -265,6 +276,8 @@ export function PlateViewport({
     setBox(null);
   }
 
+  const viewportHeight = fullscreen ? null : height ?? autoHeight;
+
   return (
     <div ref={workspaceRef} className={`plate-viewport ${fullscreen ? "is-fullscreen" : ""}`} onKeyDown={(event) => {
       if (event.key === "Escape" && fullscreen) { event.stopPropagation(); void toggleFullscreen(); }
@@ -299,11 +312,11 @@ export function PlateViewport({
       </div>
       {fullscreenError && <p className="plate-view-help" role="alert">{tr("浏览器未允许全屏，可拖动孔板下方的手柄调整高度。", "Full screen is unavailable. Drag the handle below the plate to resize it.")}</p>}
       </div>
-      <div ref={stageRef} className="plate-stage">
-      <div id={viewportId} ref={viewportRef} className={`plate-scroll ${panMode ? "pan-mode" : "select-mode"}`} data-plate-zoom={zoom.toFixed(3)} style={{ height: fullscreen ? undefined : height ?? autoHeight ?? undefined }}
+      <div ref={stageRef} className="plate-stage" onPointerLeave={() => setInspectedWellId(null)}>
+      <div id={viewportId} ref={viewportRef} className={`plate-scroll ${panMode ? "pan-mode" : "select-mode"}`} data-plate-zoom={zoom.toFixed(3)} style={{ "--plate-viewport-height": viewportHeight === null ? undefined : `${viewportHeight}px` } as CSSProperties}
         onPointerDown={beginDrag} onPointerMove={updateDrag} onPointerUp={(event) => finishDrag(event)} onPointerCancel={(event) => finishDrag(event, true)}
         onPointerOver={(event) => inspectWell(event.target)} onFocusCapture={(event) => inspectWell(event.target)}
-        onPointerLeave={() => { setInspectedWellId(null); if (!dragRef.current?.active) dragRef.current = null; }}
+        onPointerLeave={() => { if (!dragRef.current?.active) dragRef.current = null; }}
         onClickCapture={(event) => { if (suppressClickRef.current || panMode) { event.preventDefault(); event.stopPropagation(); } }}
         onDoubleClickCapture={(event) => { if (panMode) { event.preventDefault(); event.stopPropagation(); } }}
         title={tr("拖动框选 · ⌘/Ctrl 加选 · 双击编辑", "Drag to select · ⌘/Ctrl to add · Double-click to edit")}>

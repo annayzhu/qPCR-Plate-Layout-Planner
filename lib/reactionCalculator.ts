@@ -445,8 +445,9 @@ export function calculateReactionRequirements(
     }
   }
 
-  const geneRequirements = geneOrder
-    .map(({ name, role }) => {
+  // Manual-only names belong to physical reactions even when absent from setup.
+  const geneRequirements = Array.from(geneCounts.entries())
+    .map(([name, { geneType: role }]) => {
       const wellCount = geneCounts.get(name)?.count ?? 0;
       const blankWellCount = geneCounts.get(name)?.blankCount ?? 0;
       const factor = wellCount * preparationFactor;
@@ -475,7 +476,7 @@ export function calculateReactionRequirements(
     })
     .filter((requirement) => requirement.wellCount > 0);
 
-  const sampleRequirements = sampleOrder
+  const sampleRequirements = Array.from(sampleCounts.keys())
     .map((sample) => {
       const wellCount = sampleCounts.get(sample) ?? 0;
       const isBlank = isBlankSample(sample);

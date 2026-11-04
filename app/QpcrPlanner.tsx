@@ -1,5 +1,6 @@
 "use client";
 import { SampleFileImport } from "./SampleFileImport";
+import { WellNameInput } from "./WellNameInput";
 import { useWorkflowBridge } from "./workflow-bridge";
 import { plannerWorkflowOutput } from "@/lib/workflowOutput";
 import { serializePlannerSession, restorePlannerSession } from "@/lib/plannerSession";
@@ -110,6 +111,7 @@ interface EditorState {
   mode: "assay" | "empty";
   sample: string;
   gene: string;
+  geneType: GeneType;
 }
 
 interface ToastState {
@@ -1427,6 +1429,7 @@ export function QpcrPlanner() {
       mode: occupied ? "assay" : "empty",
       sample: occupied?.sample ?? sampleNames[0] ?? "",
       gene: occupied?.gene ?? completeGenes[0]?.name ?? "",
+      geneType: occupied?.geneType ?? completeGenes[0]?.role ?? "target",
     });
   }
 
@@ -1462,18 +1465,25 @@ export function QpcrPlanner() {
   }
 
 
+  function existingManualGeneRole(name: string) {
+    const known = completeGenes.find(gene => normalizedKey(gene.name) === normalizedKey(name));
+    if (known) return known.role;
+    return layout?.plates.flatMap(plate => plate.wells.filter(well => !editor || plate.plateNumber !== layout.plates[editor.plateIndex].plateNumber || !editor.wellIds.includes(well.wellId)))
+      .find(well => well.gene && normalizedKey(well.gene) === normalizedKey(name))?.geneType ?? undefined;
+  }
+
   function applyManualEdit() {
     if (!layout || !editor) return;
-    if (editor.mode === "assay" && (!editor.sample || !editor.gene)) {
+    if (editor.mode === "assay" && (!editor.sample.trim() || !editor.gene.trim())) {
       setToast({
         tone: "error",
-        message: tr("请选择样本和基因。", "Select a sample and an assay."),
+        message: tr("请选择或输入样本和基因。", "Select or enter a sample and an assay."),
       });
       return;
     }
     const plate = layout.plates[editor.plateIndex];
     const selectedGene = completeGenes.find(
-      (gene) => gene.name === editor.gene,
+      (gene) => normalizedKey(gene.name) === normalizedKey(editor.gene),
     );
     runPlateEdits([
       {
@@ -1485,9 +1495,9 @@ export function QpcrPlanner() {
       editor.mode === "assay"
         ? {
             type: "assign",
-            sample: editor.sample,
-            gene: editor.gene,
-            geneType: (selectedGene?.role ?? "target") as GeneType,
+            sample: editor.sample.trim(),
+            gene: editor.gene.trim(),
+            geneType: selectedGene?.role ?? editor.geneType,
           }
         : { type: "clear" },
     ]);
@@ -2243,7 +2253,7 @@ export function QpcrPlanner() {
                     }`,
                   )}
                 </button>
-                <SampleFileImport onImport={names=>setSamplePaste(names.join("\n"))}/>
+                <SampleFileImport language={language} onImport={names=>addSamples(names)}/>
                 <form className="quick-fill-row" onSubmit={submitQuickSamples}>
                   <input
                     className="quick-fill-input"
@@ -4217,12 +4227,7 @@ export function QpcrPlanner() {
                     `Edit ${editor.wellIds.length} selected well(s)`,
                   )}
                 </h2>
-                <p className="modal-description">
-                  {tr(
-                    "只修改当前选中的孔，并用紫色轮廓标记。",
-                    "Only the selected wells are changed and marked with a purple outline.",
-                  )}
-                </p>
+                <p className="modal-description">{editor.wellIds.join(" · ")}</p>
               </div>
               <button
                 className="icon-button modal-close"
@@ -4269,63 +4274,30 @@ export function QpcrPlanner() {
                     <span className="field-label">
                       {tr("样本", "Sample")}
                     </span>
-                    <select
-                      className="select"
-                      value={editor.sample}
-                      onChange={(event) =>
-                        setEditor((current) =>
-                          current
-                            ? { ...current, sample: event.target.value }
-                            : current,
-                        )
-                      }
-                    >
-                      {samples
-                        .filter((sample) => sample.name.trim())
-                        .map((sample) => (
-                          <option value={sample.name} key={sample.id}>
-                            {sample.name}
-                            {sample.kind === "blank" ? " · Blank" : ""}
-                          </option>
-                        ))}
-                    </select>
+                    <WellNameInput label={tr("样本", "Sample")} value={editor.sample} list="manual-well-samples"
+                      placeholder={tr("选择已有样本或输入新名称", "Choose a sample or enter a new name")}
+                      onChange={value => setEditor(current => current ? { ...current, sample: value } : current)} />
+                    <datalist id="manual-well-samples">{Array.from(new Set([...sampleNames, ...(layout?.plates.flatMap(plate => plate.wells.flatMap(well => well.sample ? [well.sample] : [])) ?? [])])).map(name => <option key={name} value={name} />)}</datalist>
                   </label>
                   <label className="field">
                     <span className="field-label">
                       {tr("基因", "Assay")}
                     </span>
-                    <select
-                      className="select"
-                      value={editor.gene}
-                      onChange={(event) =>
-                        setEditor((current) =>
-                          current
-                            ? { ...current, gene: event.target.value }
-                            : current,
-                        )
-                      }
-                    >
-                      {completeGenes.map((gene) => (
-                        <option value={gene.name} key={gene.id}>
-                          {gene.name} ·{" "}
-                          {gene.role === "reference"
-                            ? tr("内参", "Reference")
-                            : tr("目的", "Target")}
-                        </option>
-                      ))}
+                    <WellNameInput label={tr("基因", "Assay")} value={editor.gene} list="manual-well-genes"
+                      placeholder={tr("选择已有基因或输入新名称", "Choose an assay or enter a new name")}
+                      onChange={value => setEditor(current => current ? { ...current, gene: value, geneType: existingManualGeneRole(value) ?? "target" } : current)} />
+                    <datalist id="manual-well-genes">{Array.from(new Set([...completeGenes.map(gene => gene.name), ...(layout?.plates.flatMap(plate => plate.wells.flatMap(well => well.gene ? [well.gene] : [])) ?? [])])).map(name => <option key={name} value={name} />)}</datalist>
+                  </label>
+                  <label className="field">
+                    <span className="field-label">{tr("基因用途", "Assay role")}</span>
+                    <select className="select" value={existingManualGeneRole(editor.gene) ?? editor.geneType} disabled={Boolean(existingManualGeneRole(editor.gene))} onChange={event => setEditor(current => current ? { ...current, geneType: event.target.value as GeneType } : current)}>
+                      <option value="target">{tr("目的基因", "Target")}</option>
+                      <option value="reference">{tr("内参基因", "Reference")}</option>
                     </select>
                   </label>
                 </>
               )}
-              <div className="notice">
-                <Layers3 size={15} />
-                <span>
-                  {tr(
-                    "手动修改可自由保存和导出。若出现内参缺失、重复或遗漏，系统只显示提醒，请自行核对。",
-                    "Manual edits can be saved and exported freely. Missing references, duplicates, or omissions are shown as advisory messages for review.",
-                  )}
-                </span>
-              </div>
+
             </div>
             <div className="modal-actions">
               <button

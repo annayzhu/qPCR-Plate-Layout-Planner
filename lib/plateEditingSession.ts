@@ -364,14 +364,17 @@ export function dispatchPlateEdit(
     if (!plate || session.selection.wellIds.length === 0) {
       return rejected(session, plate ? "no-selection" : "plate-not-found");
     }
-    const assignment =
-      command.type === "assign"
-        ? {
-            sample: command.sample,
-            gene: command.gene,
-            geneType: command.geneType,
-          }
-        : { sample: null, gene: null, geneType: null };
+    const key = (value: string | null) => value?.trim().toLocaleLowerCase();
+    const allWells = session.plan.plates.flatMap(item => item.wells);
+    const sampleNames = [...session.planInput.samples, ...allWells.flatMap(well => well.sample ? [well.sample] : [])];
+    const geneNames = [...session.planInput.targetGenes, ...session.planInput.referenceGenes, ...allWells.flatMap(well => well.gene ? [well.gene] : [])];
+    const assignment = command.type === "assign" ? {
+      sample: sampleNames.find(name => key(name) === key(command.sample)) ?? command.sample?.trim() ?? null,
+      gene: geneNames.find(name => key(name) === key(command.gene)) ?? command.gene?.trim() ?? null,
+      geneType: session.planInput.referenceGenes.some(name => key(name) === key(command.gene)) ? "reference" as const
+        : session.planInput.targetGenes.some(name => key(name) === key(command.gene)) ? "target" as const
+        : session.plan.plates.flatMap(item => item.wells.filter(well => item.plateNumber !== session.selection.plateNumber || !session.selection.wellIds.includes(well.wellId))).find(well => key(well.gene) === key(command.gene))?.geneType ?? command.geneType,
+    } : { sample: null, gene: null, geneType: null };
     const changed = assignSelectedWells(
       plate,
       session.selection.wellIds,

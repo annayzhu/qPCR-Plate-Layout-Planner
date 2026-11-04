@@ -2071,9 +2071,10 @@ export function refreshPlanDerivedData(
     return {
       ...plate,
       name: plate.name?.trim() || defaultPlateName(plate.plateNumber),
-      sampleNames: input.samples.filter((sample) =>
-        assignedSamples.has(sample),
-      ),
+      sampleNames: Array.from(new Set([
+        ...input.samples.filter(sample => assignedSamples.has(sample)),
+        ...assignedSamples,
+      ])),
       wells: decoratedWells,
     };
   });
@@ -2236,7 +2237,9 @@ export function validateLayout(
         });
         continue;
       }
-      if (!knownSamples.has(well.sample)) {
+      // Manual-only names are outside the automatic combination/replicate matrix.
+      const manualOnly = well.source === "manual" && (!knownSamples.has(well.sample) || (!targetSet.has(well.gene) && !referenceSet.has(well.gene)));
+      if (!knownSamples.has(well.sample) && !manualOnly) {
         errors.push({
           code: "E_UNKNOWN_SAMPLE",
           plateNumber: plate.plateNumber,
@@ -2245,7 +2248,7 @@ export function validateLayout(
         });
       }
       if (!targetSet.has(well.gene) && !referenceSet.has(well.gene)) {
-        errors.push({
+        if (!manualOnly) errors.push({
           code: "E_UNKNOWN_GENE",
           plateNumber: plate.plateNumber,
           wellIds: [well.wellId],
@@ -2264,6 +2267,8 @@ export function validateLayout(
           });
         }
       }
+      // Keep assignment/known-role checks above and required setup checks below.
+      if (manualOnly) continue;
       const key = groupKey(well.sample, well.gene);
       const local = plateGroups.get(key) ?? [];
       local.push(well);
