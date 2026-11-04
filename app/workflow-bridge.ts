@@ -26,9 +26,9 @@ export function useWorkflowBridge(state: unknown, restore: (context: WorkflowCon
     useEffect(() => {
         if (window.parent === window)
             return;
-        const send = (message: object) => window.parent.postMessage({ protocol: 'labnest-qpcr-v1', sessionId: sessionId.current, ...message }, window.location.origin);
+        const send = (message: object) => window.parent.postMessage({ protocol: 'labnest-tool-v1', sessionId: sessionId.current, ...message }, window.location.origin);
         const receive = async (event: MessageEvent) => {
-            if (event.origin !== location.origin || event.source !== window.parent || event.data?.protocol !== 'labnest-qpcr-v1')
+            if (event.origin !== location.origin || event.source !== window.parent || event.data?.protocol !== 'labnest-tool-v1')
                 return;
             if (event.data.type === 'CONTEXT_INIT') {
                 sessionId.current = event.data.sessionId;
@@ -67,7 +67,7 @@ export function useWorkflowBridge(state: unknown, restore: (context: WorkflowCon
             return;
         const timer = setTimeout(() => { try {
             localStorage.setItem(`labnest-qpcr:${sessionId.current}`, JSON.stringify(state));
-            window.parent.postMessage({ protocol: 'labnest-qpcr-v1', type: 'DRAFT_CHANGED', sessionId: sessionId.current, state }, location.origin);
+            window.parent.postMessage({ protocol: 'labnest-tool-v1', type: 'DRAFT_CHANGED', sessionId: sessionId.current, state }, location.origin);
         }
         catch { } }, 250);
         return () => clearTimeout(timer);

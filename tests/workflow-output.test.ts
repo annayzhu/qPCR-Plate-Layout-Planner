@@ -7,7 +7,10 @@ test('complete mix copy uses actual wells, includes units and cannot publish sta
  session=dispatchPlannerSession(session,{type:'generate-layout',generatedAt:'2026-11-03T00:00:00.000Z'}).session;
  const result=plannerWorkflowOutput(session);
  assert.match(result.mixTsv,/µL/);
- assert.equal(result.images.length,1);
+ assert.equal(result.images.length,0);
+ assert.equal(result.plates.length,1);
+ assert.deepEqual(Object.keys(result.plates[0].wells).length,6);
+ assert.equal(result.plates[0].plateSize,96);
  assert.equal(result.table.rows[0][1],'3');
  session=dispatchPlannerSession(session,{type:'patch-setup',patch:{replicates:2}}).session;
  assert.throws(()=>plannerWorkflowOutput(session));
