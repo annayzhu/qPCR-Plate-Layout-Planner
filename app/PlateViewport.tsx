@@ -18,12 +18,17 @@ interface PlateViewportProps {
   columns: number;
   language: "zh" | "en";
   editable: boolean;
-  moveMode: boolean;
   selectedWellIds: string[];
   editingToolbar: ReactNode;
   legend?: ReactNode;
   describeWell: (wellId: string) => string;
   onSelect: (wellIds: string[]) => void;
+  /** Dragging a selected well: the well under the pointer, or null when it leaves the plate. */
+  onMovePreview?: (fromWellId: string, toWellId: string | null) => void;
+  onMoveDrop?: (fromWellId: string, toWellId: string) => void;
+  onMoveCancel?: () => void;
+  onHoverWell?: (wellId: string | null) => void;
+  onBlankClick?: () => void;
   children: ReactNode;
 }
 
@@ -38,6 +43,10 @@ interface Drag {
   base: string[];
   active: boolean;
   pan: boolean;
+  /** Set when the press began on a selected well: the drag moves the selection. */
+  moveFrom: string | null;
+  moveTo: string | null;
+  element: HTMLDivElement;
 }
 
 const MIN_ZOOM = 0.1;
@@ -51,7 +60,8 @@ const clampHeight = (value: number) => Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT,
 
 /** View-only interactions live here; assignments and undo remain in the editing session. */
 export function PlateViewport({
-  name, rows, columns, language, editable, moveMode, selectedWellIds, editingToolbar, legend, describeWell, onSelect, children,
+  name, rows, columns, language, editable, selectedWellIds, editingToolbar, legend, describeWell, onSelect,
+  onMovePreview, onMoveDrop, onMoveCancel, onHoverWell, onBlankClick, children,
 }: PlateViewportProps) {
   const viewportId = useId();
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -215,8 +225,10 @@ export function PlateViewport({
   }
 
   function beginDrag(event: PointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || (!panMode && (!editable || moveMode))) return;
+    if (event.button !== 0 || (!panMode && !editable)) return;
     const point = pointInGrid(event);
+    const pressedWell = (event.target as Element).closest<HTMLElement>("button[data-well-id]")?.dataset.wellId ?? null;
+    const modified = event.metaKey || event.ctrlKey || event.shiftKey;
     dragRef.current = {
       pointerId: event.pointerId,
       startX: point.x, startY: point.y,
@@ -226,15 +238,47 @@ export function PlateViewport({
       base: event.metaKey || event.ctrlKey ? selectedWellIds : [],
       active: false,
       pan: panMode,
+      moveFrom: !panMode && !modified && pressedWell && selectedWellIds.includes(pressedWell) ? pressedWell : null,
+      moveTo: null,
+      element: event.currentTarget,
     };
+  }
+
+  function updateMoveDrag(drag: Drag, event: PointerEvent<HTMLDivElement>) {
+    const viewport = event.currentTarget;
+    const bounds = viewport.getBoundingClientRect();
+    const edge = 28;
+    if (event.clientX < bounds.left + edge) viewport.scrollLeft -= 16;
+    else if (event.clientX > bounds.right - edge) viewport.scrollLeft += 16;
+    if (event.clientY < bounds.top + edge) viewport.scrollTop -= 16;
+    else if (event.clientY > bounds.bottom - edge) viewport.scrollTop += 16;
+    const inside = event.clientX >= bounds.left && event.clientX <= bounds.right && event.clientY >= bounds.top && event.clientY <= bounds.bottom;
+    // Gaps between wells keep the last target; leaving the plate drops nothing.
+    let next = drag.moveTo;
+    if (!inside) next = null;
+    else {
+      const well = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("button[data-well-id]");
+      if (well && gridRef.current?.contains(well)) next = well.dataset.wellId ?? null;
+    }
+    if (next !== drag.moveTo || !drag.active) {
+      drag.moveTo = next;
+      onMovePreview?.(drag.moveFrom!, next);
+    }
   }
 
   function updateDrag(event: PointerEvent<HTMLDivElement>) {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (!drag.active && Math.hypot(event.clientX - drag.clientX, event.clientY - drag.clientY) < 5) return;
-    drag.active = true;
     event.preventDefault();
+    if (drag.moveFrom) {
+      const starting = !drag.active;
+      if (starting) event.currentTarget.setPointerCapture(event.pointerId);
+      updateMoveDrag(drag, event);
+      drag.active = true;
+      return;
+    }
+    drag.active = true;
     event.currentTarget.setPointerCapture(event.pointerId);
     if (drag.pan) {
       event.currentTarget.scrollLeft = drag.scrollLeft - (event.clientX - drag.clientX);
@@ -252,7 +296,10 @@ export function PlateViewport({
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    if (!cancelled && drag.active && !drag.pan) {
+    if (drag.moveFrom && drag.active) {
+      if (!cancelled && drag.moveTo) onMoveDrop?.(drag.moveFrom, drag.moveTo);
+      else onMoveCancel?.();
+    } else if (!cancelled && drag.active && !drag.pan) {
       const point = pointInGrid(event);
       const left = Math.min(drag.startX, point.x);
       const top = Math.min(drag.startY, point.y);
@@ -269,12 +316,30 @@ export function PlateViewport({
       onSelect([...selected]);
     } else if (!cancelled && !drag.active && !drag.pan && !(event.target as Element).closest("button[data-well-id]")) {
       onSelect(drag.base);
+      if (!drag.base.length) onBlankClick?.();
     }
     suppressClickRef.current = drag.active;
     window.setTimeout(() => { suppressClickRef.current = false; }, 0);
     dragRef.current = null;
     setBox(null);
   }
+
+  // Escape abandons a move drag without touching the plate.
+  useEffect(() => {
+    const cancelOnEscape = (event: KeyboardEvent) => {
+      const drag = dragRef.current;
+      if (event.key !== "Escape" || !drag?.moveFrom || !drag.active) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (drag.element.hasPointerCapture(drag.pointerId)) drag.element.releasePointerCapture(drag.pointerId);
+      dragRef.current = null;
+      suppressClickRef.current = true;
+      window.setTimeout(() => { suppressClickRef.current = false; }, 0);
+      onMoveCancel?.();
+    };
+    window.addEventListener("keydown", cancelOnEscape, true);
+    return () => window.removeEventListener("keydown", cancelOnEscape, true);
+  }, [onMoveCancel]);
 
   const viewportHeight = fullscreen ? null : height ?? autoHeight;
 
@@ -315,12 +380,19 @@ export function PlateViewport({
       <div ref={stageRef} className="plate-stage" onPointerLeave={() => setInspectedWellId(null)}>
       <div id={viewportId} ref={viewportRef} className={`plate-scroll ${panMode ? "pan-mode" : "select-mode"}`} data-plate-zoom={zoom.toFixed(3)} style={{ "--plate-viewport-height": viewportHeight === null ? undefined : `${viewportHeight}px` } as CSSProperties}
         onPointerDown={beginDrag} onPointerMove={updateDrag} onPointerUp={(event) => finishDrag(event)} onPointerCancel={(event) => finishDrag(event, true)}
-        onPointerOver={(event) => inspectWell(event.target)} onFocusCapture={(event) => inspectWell(event.target)}
-        onPointerLeave={() => { if (!dragRef.current?.active) dragRef.current = null; }}
+        onPointerOver={(event) => {
+          inspectWell(event.target);
+          onHoverWell?.((event.target as Element).closest<HTMLElement>("button[data-well-id]")?.dataset.wellId ?? null);
+        }}
+        onFocusCapture={(event) => inspectWell(event.target)}
+        onPointerLeave={() => {
+          onHoverWell?.(null);
+          if (!dragRef.current?.active) dragRef.current = null;
+        }}
         onClickCapture={(event) => { if (suppressClickRef.current || panMode) { event.preventDefault(); event.stopPropagation(); } }}
         onDoubleClickCapture={(event) => { if (panMode) { event.preventDefault(); event.stopPropagation(); } }}
-        title={tr("拖动框选 · ⌘/Ctrl 加选 · 双击编辑", "Drag to select · ⌘/Ctrl to add · Double-click to edit")}>
-        <div ref={gridRef} className={`plate-grid ${rows === 16 ? "plate-384" : ""} ${moveMode ? "move-mode" : ""} ${box ? "is-box-selecting" : ""}`} style={{ "--plate-columns": columns, zoom } as CSSProperties} role="grid" aria-label={tr(`${name} 孔板布局`, `${name} plate layout`)}>
+        title={tr("拖动框选 · 拖动已选孔可移动 · ⌘/Ctrl 加选 · 双击编辑", "Drag to select · drag a selected well to move · ⌘/Ctrl to add · double-click to edit")}>
+        <div ref={gridRef} className={`plate-grid ${rows === 16 ? "plate-384" : ""} ${box ? "is-box-selecting" : ""}`} style={{ "--plate-columns": columns, zoom } as CSSProperties} role="grid" aria-label={tr(`${name} 孔板布局`, `${name} plate layout`)}>
           {box && <span className="well-selection-box" aria-hidden="true" style={box} />}
           {children}
         </div>

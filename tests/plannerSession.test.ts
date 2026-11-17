@@ -349,7 +349,6 @@ test("Saved Planner Draft excludes transient editing controls and history", () =
     commands: [
       { type: "select", plateNumber: 1, wellIds: [wellId], mode: "replace" },
       { type: "copy" },
-      { type: "set-move-mode", enabled: true },
       { type: "clear" },
     ],
   }).session;
@@ -359,7 +358,6 @@ test("Saved Planner Draft excludes transient editing controls and history", () =
   const restored = restorePlannerSession(serializePlannerSession(session)).session;
   assert.deepEqual(restored.plateEditing?.selection.wellIds, []);
   assert.equal(restored.plateEditing?.clipboard, null);
-  assert.equal(restored.plateEditing?.moveMode, false);
   assert.deepEqual(restored.plateEditing?.undoStack, []);
   assert.deepEqual(restored.plateEditing?.redoStack, []);
   assert.equal(

@@ -8,7 +8,7 @@ import { PlateViewport } from "../app/PlateViewport";
 function renderViewport(language: "zh" | "en", selectedWellIds: string[] = []) {
   const props: Parameters<typeof PlateViewport>[0] = {
     name: "Plate 01", rows: 16, columns: 24, language,
-    editable: true, moveMode: false, selectedWellIds,
+    editable: true, selectedWellIds,
     editingToolbar: createElement("button", null, "Edit selected wells"),
     describeWell: (id: string) => id === "A1" ? "A1, A549-siZNF436-Long-NC-FAM, GAPDH" : "",
     onSelect() {},

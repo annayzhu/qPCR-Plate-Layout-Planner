@@ -96,7 +96,9 @@ test("declares plate copy, paste, restore, and zoom editing affordances", async 
     readFile(new URL("../app/PlateViewport.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(source, /复制所选孔（⌘\/Ctrl \+ C）/);
-  assert.match(source, /粘贴到所选起始孔（⌘\/Ctrl \+ V）/);
+  assert.match(source, /从所选的第一个孔开始粘贴（⌘\/Ctrl \+ V）/);
+  assert.match(viewport, /拖动已选孔可移动/);
+  assert.doesNotMatch(source, /set-move-mode/);
   assert.match(source, /恢复所选/);
   assert.match(viewport, /孔板缩放百分比/);
   assert.match(viewport, /适合窗口/);

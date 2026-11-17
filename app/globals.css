@@ -1,6 +1,12 @@
 @import "tailwindcss";
 
 :root {
+  /* The plate tray and empty wells; inside LabNest these follow the system style. */
+  --plate-tray-a: #f9f8f4;
+  --plate-tray-b: #ecebe5;
+  --plate-tray-border: #d8d7cf;
+  --plate-empty: rgba(255, 255, 255, 0.58);
+  --plate-empty-border: #d8d7d0;
   --canvas: #f6f9f8;
   --surface: #ffffff;
   --surface-soft: #f0f5f4;
@@ -47,7 +53,7 @@ body {
   background:
     radial-gradient(
       circle at 1px 1px,
-      rgba(120,168,159,0.045) 1px,
+      color-mix(in srgb, var(--action) 4.5%, transparent) 1px,
       transparent 0
     )
     0 0 / 24px 24px,
@@ -115,10 +121,10 @@ select:focus-visible,
   height: 40px;
   flex: 0 0 auto;
   place-items: center;
-  border: 1px solid rgba(120,168,159,0.18);
+  border: 1px solid color-mix(in srgb, var(--action) 18%, transparent);
   border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 6px 18px rgba(120,168,159,0.1);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--action) 10%, transparent);
   color: var(--action);
 }
 
@@ -141,7 +147,7 @@ select:focus-visible,
   overflow: hidden;
   margin: 2px 0 0;
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.04em;
   text-overflow: ellipsis;
   text-transform: uppercase;
@@ -199,7 +205,7 @@ select:focus-visible,
   background: transparent;
   color: var(--ink-secondary);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 720;
 }
 
@@ -332,14 +338,14 @@ select:focus-visible,
 .setup-history-bar > span {
   display: grid;
   color: var(--ink);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 680;
   line-height: 1.25;
 }
 
 .setup-history-bar small {
   color: var(--ink-secondary);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 520;
 }
 
@@ -389,7 +395,7 @@ select:focus-visible,
   background: var(--surface-soft);
   color: var(--ink-secondary);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -457,7 +463,7 @@ select:focus-visible,
   display: block;
   margin-top: 3px;
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .plate-mini {
@@ -582,7 +588,7 @@ select:focus-visible,
   border-radius: 999px;
   background: var(--surface-raised);
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .chip-label {
@@ -630,7 +636,7 @@ select:focus-visible,
   border-radius: 8px;
   background: color-mix(in srgb, var(--surface-soft) 92%, white);
   color: var(--ink-secondary);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
@@ -705,7 +711,7 @@ select:focus-visible,
   min-width: 0;
   overflow: hidden;
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -715,7 +721,7 @@ select:focus-visible,
 .loading-group-input input { min-width: 100px; width: 100px; flex: 1; height: 32px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); font-size: 12px; }
 .loading-group-input button { flex-basis: 100%; }
 .strip-direction-diagram { display: grid; grid-template-columns: repeat(3, 12px); gap: 2px; margin-bottom: 5px; }
-.strip-direction-diagram small { font-size: 9px; line-height: 14px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 2px; }
+.strip-direction-diagram small { font-size: 12px; line-height: 14px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 2px; }
 .layout-direction-toggle button:has(.strip-direction-diagram) { display: flex; flex-direction: column; align-items: center; padding: 8px; }
 .selection-toolbar.is-idle { display: none; }
 .strip-summary, .setup-advanced { font-size: 12px; color: var(--ink-secondary); }
@@ -737,7 +743,7 @@ select:focus-visible,
 .sidebar .quick-fill-button { min-height: 32px; padding: 4px 8px; font-size: 12px; }
 .sidebar .quick-fill-button { min-width: 100px; }
 .sidebar .notice { padding: 8px 10px; }
-.setup-summary > span { font-size: 11px; }
+.setup-summary > span { font-size: 12px; }
 .preview-details .summary-grid { margin-top: 12px; }
 .plate-hint summary { cursor: pointer; white-space: nowrap; }
 .loading-route-guide:not([open]) { display: block; padding-block: 7px; }
@@ -784,7 +790,7 @@ select:focus-visible,
 
 .sample-bulk-metadata strong {
   color: var(--ink-secondary);
-  font-size: 9px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -797,7 +803,7 @@ select:focus-visible,
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .sample-bulk-metadata button,
@@ -809,7 +815,7 @@ select:focus-visible,
   background: var(--action-soft);
   color: var(--action);
   cursor: pointer;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 720;
   white-space: nowrap;
 }
@@ -822,7 +828,7 @@ select:focus-visible,
   border-radius: 9px;
   background: var(--surface-raised);
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .sample-metadata-input {
@@ -865,7 +871,7 @@ select:focus-visible,
   border-radius: 9px;
   background: #fbf7e9;
   color: #705f2e;
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -963,7 +969,7 @@ select:focus-visible,
   background: transparent;
   color: var(--ink);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
   text-align: left;
 }
@@ -1073,7 +1079,7 @@ select:focus-visible,
   background: #e5edf5;
   color: #29465e;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 720;
   transition:
     border-color 150ms ease,
@@ -1249,7 +1255,7 @@ select:focus-visible,
   min-height: 24px;
   border-radius: 999px;
   color: var(--action);
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 750;
 }
 
@@ -1280,7 +1286,7 @@ select:focus-visible,
   border-radius: 999px;
   background: #edf1f3;
   color: #536977;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1316,7 +1322,7 @@ select:focus-visible,
 .loading-pattern-option.selected {
   border-color: #9eacb8;
   background: #f1f4f6;
-  box-shadow: inset 0 0 0 1px rgba(120,168,159,0.05);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--action) 5%, transparent);
   color: var(--ink);
 }
 
@@ -1327,13 +1333,13 @@ select:focus-visible,
 }
 
 .loading-pattern-option strong {
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 680;
 }
 
 .loading-pattern-option small {
   color: var(--ink-tertiary);
-  font-size: 9px;
+  font-size: 12px;
 }
 
 .loading-pattern-radio {
@@ -1364,7 +1370,7 @@ select:focus-visible,
   border-radius: 9px;
   background: #f1f4f6;
   color: #536977;
-  font-size: 9.5px;
+  font-size: 12px;
   line-height: 1.45;
 }
 
@@ -1388,7 +1394,7 @@ select:focus-visible,
   border-radius: 11px;
   background: var(--surface-raised);
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -1430,7 +1436,7 @@ select:focus-visible,
 
 .setup-summary span {
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .generate-button {
@@ -1469,9 +1475,9 @@ select:focus-visible,
 .plate-card > .plate-card-heading { padding-block: 14px; }
 .main-area > .hero-strip { padding-block: 12px; margin-bottom: 14px; }
 .preview-heading-copy { flex-wrap: wrap; gap: 4px 12px; }
-.preview-status { color: var(--ink-secondary); font-size: 11px; }
+.preview-status { color: var(--ink-secondary); font-size: 12px; }
 .reaction-toggle { flex-shrink: 0; min-height: 32px; padding: 4px 8px; font-size: 12px; }
-.preview-details { order: 3; color: var(--ink-secondary); font-size: 11px; }
+.preview-details { order: 3; color: var(--ink-secondary); font-size: 12px; }
 .preview-details > summary { width: fit-content; cursor: pointer; }
 
 .eyebrow {
@@ -1480,7 +1486,7 @@ select:focus-visible,
   gap: 7px;
   margin: 0 0 10px;
   color: var(--action);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 760;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1521,7 +1527,7 @@ select:focus-visible,
 
 .metric-label {
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 650;
   letter-spacing: 0.05em;
   text-transform: uppercase;
@@ -1538,14 +1544,14 @@ select:focus-visible,
 .metric-detail {
   grid-column: 1 / -1;
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .rationale {
   grid-column: 1 / -1;
   margin-top: 2px;
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .empty-state {
@@ -1644,7 +1650,7 @@ select:focus-visible,
   display: block;
   margin-top: 2px;
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .plate-tab-state {
@@ -1744,7 +1750,7 @@ select:focus-visible,
   background: var(--action-soft);
   color: var(--action);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -1771,14 +1777,14 @@ select:focus-visible,
 
 .reaction-numeric-field .field-label {
   min-height: 30px;
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
 .reaction-input-secondary .field-label {
   min-height: auto;
   color: var(--ink);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .reaction-primer-setting {
@@ -1797,14 +1803,14 @@ select:focus-visible,
   align-content: center;
   gap: 5px;
   padding: 7px 9px;
-  border: 1px solid rgba(120,168,159,0.13);
+  border: 1px solid color-mix(in srgb, var(--action) 13%, transparent);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.72);
 }
 
 .primer-final-preview > span {
   color: var(--ink-secondary);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.35;
 }
 
@@ -1821,7 +1827,7 @@ select:focus-visible,
   gap: 6px;
   color: var(--action);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1851,13 +1857,13 @@ select:focus-visible,
 
 .gene-mix-mode-heading span {
   color: var(--ink);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 750;
 }
 
 .gene-mix-mode-heading small {
   color: var(--ink-secondary);
-  font-size: 8px;
+  font-size: 12px;
   text-align: right;
 }
 
@@ -1875,7 +1881,7 @@ select:focus-visible,
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.76);
   color: var(--ink-secondary);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.25;
   cursor: pointer;
 }
@@ -1925,7 +1931,7 @@ select:focus-visible,
   border-radius: 10px;
   background: var(--surface-raised);
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
   line-height: 1.55;
 }
 
@@ -1938,7 +1944,7 @@ select:focus-visible,
 .compact-notice {
   margin-top: 10px;
   padding: 9px 10px;
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .reaction-section {
@@ -1961,7 +1967,7 @@ select:focus-visible,
 
 .reaction-section-title strong {
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .danger-text {
@@ -1978,7 +1984,7 @@ select:focus-visible,
 .reaction-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 9px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1993,7 +1999,7 @@ select:focus-visible,
 .reaction-table th {
   background: var(--surface-raised);
   color: var(--ink-secondary);
-  font-size: 8px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -2026,7 +2032,7 @@ select:focus-visible,
   border-radius: 4px;
   background: var(--reference);
   color: var(--reference-ink);
-  font-size: 7px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -2048,7 +2054,7 @@ select:focus-visible,
 
 .reagent-summary-grid span {
   color: var(--ink-secondary);
-  font-size: 8px;
+  font-size: 12px;
 }
 
 .reagent-summary-grid strong {
@@ -2059,7 +2065,7 @@ select:focus-visible,
 .reaction-total-line {
   margin: 10px 0 0;
   color: var(--ink-secondary);
-  font-size: 9px;
+  font-size: 12px;
   line-height: 1.6;
 }
 
@@ -2079,14 +2085,14 @@ select:focus-visible,
 .reaction-details summary {
   color: var(--ink);
   cursor: pointer;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 700;
 }
 
 .reaction-table-footnote {
   margin: 8px 0 0;
   color: var(--ink-secondary);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -2096,7 +2102,7 @@ select:focus-visible,
   margin-left: 5px;
   padding: 2px 4px;
   border-radius: 4px;
-  font-size: 7px;
+  font-size: 12px;
   font-weight: 800;
 }
 
@@ -2251,7 +2257,7 @@ select:focus-visible,
   border-radius: 999px;
   background: var(--warning-soft);
   color: var(--warning);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 720;
 }
 
@@ -2295,7 +2301,7 @@ select:focus-visible,
   align-items: center;
   gap: 6px;
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .legend-item span:last-child {
@@ -2325,7 +2331,7 @@ select:focus-visible,
 
 .plate-hint {
   color: var(--ink-secondary);
-  font-size: 10px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -2338,7 +2344,7 @@ select:focus-visible,
   border-bottom: 1px solid var(--border);
   background: #f4f5f3;
   color: var(--ink-secondary);
-  font-size: 9.5px;
+  font-size: 12px;
 }
 
 .loading-route-guide-title {
@@ -2351,7 +2357,7 @@ select:focus-visible,
   align-items: center;
   gap: 5px;
   padding: 3px 7px;
-  border: 1px solid rgba(120,168,159,0.11);
+  border: 1px solid color-mix(in srgb, var(--action) 11%, transparent);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.68);
   font-family: "SFMono-Regular", Consolas, monospace;
@@ -2510,10 +2516,10 @@ select:focus-visible,
   margin-inline: auto;
   align-items: center;
   padding: 14px 16px 17px 12px;
-  border: 1px solid #d8d7cf;
+  border: 1px solid var(--plate-tray-border);
   border-radius: 24px;
   background:
-    linear-gradient(145deg, #f9f8f4, #ecebe5);
+    linear-gradient(145deg, var(--plate-tray-a), var(--plate-tray-b));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.9),
     inset 0 -10px 25px rgba(95, 92, 82, 0.035);
@@ -2535,7 +2541,7 @@ select:focus-visible,
   z-index: 8;
   border: 1.5px solid rgba(108,161,150,0.78);
   border-radius: 8px;
-  background: rgba(126,173,163,0.1);
+  background: color-mix(in srgb, var(--action) 10%, transparent);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.48);
   pointer-events: none;
 }
@@ -2544,12 +2550,29 @@ select:focus-visible,
   gap: 5px;
 }
 
-.plate-grid.move-mode {
-  cursor: crosshair;
-  box-shadow:
-    inset 0 0 0 2px rgba(126,173,163,0.24),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    inset 0 -10px 25px rgba(95, 92, 82, 0.035);
+/* Pressing a selected well starts a move, so touch must not pan from there. */
+.plate-scroll.select-mode .well-selected { cursor: grab; touch-action: none; }
+.plate-scroll.select-mode .well-move-source { cursor: grabbing; }
+.well.well-move-source:not(.well-drop-landing, .well-drop-swap, .well-drop-invalid) { opacity: 0.55; transform: none; box-shadow: none; }
+/* :not(:disabled) outranks the well hover style, so the well under the pointer stays marked. */
+.plate-grid .well.well-drop-landing:not(:disabled),
+.plate-grid .well.well-paste-target:not(:disabled) {
+  z-index: 4;
+  border-color: var(--action-hover);
+  box-shadow: 0 0 0 3px var(--action-hover), inset 0 0 0 999px rgba(98, 152, 142, 0.2);
+}
+.plate-grid .well.well-paste-target:not(:disabled) { border-style: dashed; }
+.plate-grid .well.well-drop-swap:not(:disabled),
+.plate-grid .well.well-paste-overwrite:not(:disabled) {
+  z-index: 4;
+  border-color: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning), inset 0 0 0 999px rgba(145, 100, 62, 0.18);
+}
+.plate-grid .well.well-drop-invalid:not(:disabled),
+.plate-grid .well.well-paste-invalid:not(:disabled) {
+  z-index: 4;
+  border-color: var(--danger);
+  box-shadow: 0 0 0 3px var(--danger), inset 0 0 0 999px rgba(173, 87, 87, 0.18);
 }
 
 .grid-corner,
@@ -2576,10 +2599,10 @@ select:focus-visible,
 }
 
 .row-route-marker {
-  width: 11px;
-  height: 11px;
+  width: 15px;
+  height: 15px;
   background: rgba(255, 255, 255, 0.72);
-  font-size: 8px;
+  font-size: 12px;
   line-height: 1;
 }
 
@@ -2590,7 +2613,8 @@ select:focus-visible,
   height: var(--well-size);
   place-items: center;
   overflow: hidden;
-  padding: 3px;
+  /* Narrow side padding keeps a six-letter gene name whole at the 12 px minimum. */
+  padding: 3px 1px;
   border: 1px solid var(--well-border, rgba(41, 70, 94, 0.18));
   border-radius: 50%;
   background: var(--well-bg, #dde8f2);
@@ -2611,7 +2635,7 @@ select:focus-visible,
   z-index: 2;
   border-color: var(--action);
   box-shadow:
-    0 0 0 3px rgba(120,168,159,0.11),
+    0 0 0 3px color-mix(in srgb, var(--action) 11%, transparent),
     0 4px 10px rgba(35, 35, 31, 0.1);
   transform: scale(1.06);
 }
@@ -2638,8 +2662,8 @@ select:focus-visible,
 }
 
 .well-empty {
-  --well-bg: rgba(255, 255, 255, 0.58);
-  --well-border: #d8d7d0;
+  --well-bg: var(--plate-empty);
+  --well-border: var(--plate-empty-border);
   box-shadow: inset 0 1px 2px rgba(70, 68, 62, 0.035);
 }
 
@@ -2653,15 +2677,15 @@ select:focus-visible,
 .well-manual {
   border: 2px solid var(--manual);
   box-shadow:
-    0 0 0 2px rgba(126,173,163,0.12),
+    0 0 0 2px color-mix(in srgb, var(--action) 12%, transparent),
     inset 0 1px 1px rgba(255, 255, 255, 0.85);
 }
 
 .well-selected {
   z-index: 3;
-  border-color: #6ca196;
+  border-color: var(--action-hover);
   box-shadow:
-    0 0 0 3px rgba(126,173,163,0.23),
+    0 0 0 3px color-mix(in srgb, var(--action) 23%, transparent),
     inset 0 1px 1px rgba(255, 255, 255, 0.85);
   transform: scale(1.04);
 }
@@ -2718,7 +2742,8 @@ select:focus-visible,
 
 .well-sub {
   margin-top: 1px;
-  font-size: 11px;
+  font-size: 12px;
+  letter-spacing: -0.01em;
 }
 
 .validation-bar {
@@ -2730,7 +2755,7 @@ select:focus-visible,
   border-radius: 11px;
   background: var(--success-soft);
   color: #245a46;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .validation-bar.invalid {
@@ -2758,7 +2783,7 @@ select:focus-visible,
   border-radius: 13px;
   background: rgba(255, 255, 255, 0.72);
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .method-note strong {
@@ -2809,7 +2834,7 @@ select:focus-visible,
 
 .field-label {
   color: var(--ink-secondary);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
 }
 
@@ -2829,7 +2854,7 @@ select:focus-visible,
   background: transparent;
   color: var(--ink-secondary);
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 650;
 }
 
@@ -2879,7 +2904,7 @@ select:focus-visible,
   justify-content: space-between;
   gap: 16px;
   color: var(--ink-tertiary);
-  font-size: 10px;
+  font-size: 12px;
 }
 
 .visually-hidden {

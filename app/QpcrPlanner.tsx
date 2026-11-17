@@ -23,7 +23,6 @@ import {
   Languages,
   Layers3,
   Minus,
-  Move,
   Pencil,
   Plus,
   Redo2,
@@ -68,6 +67,8 @@ import {
   parseQuickEntryCount,
 } from "@/lib/quickEntries";
 import { type PlateEditCommand } from "@/lib/plateEditingSession";
+import { planPaste, planSwap } from "@/lib/manualLayout";
+import "./hostTheme";
 import {
   clearPlannerDraft,
   loadPlannerDraft,
@@ -423,7 +424,21 @@ export function QpcrPlanner() {
   );
   const selectedWellIds = editingSession?.selection.wellIds ?? [];
   const selectionAnchorId = editingSession?.selection.anchorWellId ?? null;
-  const moveMode = editingSession?.moveMode ?? false;
+  // Drag-to-swap and paste previews; both are drawn from the same plans the edits use.
+  const [movePreview, setMovePreview] = useState<{ from: string; to: string | null } | null>(null);
+  const [pasteArmed, setPasteArmed] = useState(false);
+  const [hoveredWellId, setHoveredWellId] = useState<string | null>(null);
+  const hoveredWellRef = useRef<string | null>(null);
+  // After a click on the plate, ⌘C/⌘V act on wells even if the page still reports an old text selection.
+  const pointerOnPlateRef = useRef(false);
+  useEffect(() => {
+    const remember = (event: PointerEvent) => {
+      pointerOnPlateRef.current = Boolean((event.target as Element | null)?.closest?.(".plate-scroll"));
+    };
+    document.addEventListener("pointerdown", remember, true);
+    return () => document.removeEventListener("pointerdown", remember, true);
+  }, []);
+  const cancelMovePreview = useCallback(() => setMovePreview(null), []);
   const wellClipboard = editingSession?.clipboard ?? null;
   const undoStack = editingSession?.undoStack ?? [];
   const redoStack = editingSession?.redoStack ?? [];
@@ -1440,10 +1455,6 @@ export function QpcrPlanner() {
     well: PlannerWell,
   ) {
     if (confirmed[String(plate.plateNumber)] || settingsStale) return;
-    if (moveMode) {
-      moveSelectionTo(plateIndex, plate, well.wellId);
-      return;
-    }
     const additive = event.metaKey || event.ctrlKey;
     if (event.shiftKey && selectionAnchorId) {
       runPlateEdit({
@@ -1527,80 +1538,83 @@ export function QpcrPlanner() {
     if (!activePlate || selectedWellIds.length === 0) return false;
     const copied = runPlateEdit({ type: "copy" });
     if (!copied || copied.outcome.status !== "copied") return false;
+    if (selectedOccupiedCount === 0) {
+      setPasteArmed(false);
+      setToast({
+        tone: "neutral",
+        message: tr("所选孔都是空的，没有可复制的内容。", "The selected wells are empty; nothing to copy."),
+      });
+      return false;
+    }
+    setPasteArmed(true);
+    setHoveredWellId(hoveredWellRef.current);
     setToast({
       tone: "neutral",
       message: tr(
-        `已复制 ${selectedWellIds.length} 个孔；选择目标起始孔后粘贴。`,
-        `Copied ${selectedWellIds.length} well(s); select a destination anchor to paste.`,
+        `已复制 ${selectedOccupiedCount} 个孔；指向目标孔后按 ⌘/Ctrl + V 粘贴。`,
+        `Copied ${selectedOccupiedCount} well(s). Point at a well and press ⌘/Ctrl + V.`,
       ),
     });
     return true;
   }
 
   function pasteSelection() {
-    if (
-      !layout ||
-      !activePlate ||
-      !wellClipboard ||
-      activePlateConfirmed ||
-      settingsStale
-    ) {
-      return false;
-    }
-    const destinationWellId = selectionAnchorId ?? selectedWellIds[0];
-    if (!destinationWellId) {
+    if (!layout || !activePlate || !wellClipboard || settingsStale) return false;
+    if (activePlateConfirmed) {
       setToast({
         tone: "error",
-        message: tr(
-          "请先选择粘贴区域的起始孔。",
-          "Select the destination anchor well first.",
-        ),
+        message: tr("此板已确认，取消确认后才能粘贴。", "This plate is confirmed. Unconfirm it to paste."),
       });
       return false;
     }
-    let pasted = runPlateEdit({
+    // The ref is current even before the hover re-renders the preview.
+    const destinationWellId = (pasteArmed ? hoveredWellRef.current : null) ?? firstSelectedWellId;
+    if (!destinationWellId) {
+      setToast({
+        tone: "error",
+        message: tr("先选中或指向要粘贴到的孔。", "Select or point at the well to paste into."),
+      });
+      return false;
+    }
+    const plan = planPaste(activePlate, wellClipboard, destinationWellId);
+    const pasted = runPlateEdit({
       type: "paste",
       plateNumber: activePlate.plateNumber,
       destinationWellId,
     });
-    if (pasted?.outcome.status === "conflict") {
-      const overwrite = window.confirm(
-        tr(
-          `目标区域已有 ${pasted.outcome.wellIds?.length ?? 0} 个占用孔。是否覆盖？`,
-          `The destination contains ${pasted.outcome.wellIds?.length ?? 0} occupied well(s). Overwrite them?`,
-        ),
-      );
-      if (!overwrite) return false;
-      pasted = runPlateEdit({
-        type: "paste",
-        plateNumber: activePlate.plateNumber,
-        destinationWellId,
-        allowOverwrite: true,
-      });
-    }
     if (!pasted || pasted.outcome.status !== "applied") {
+      const reason = pasted?.outcome.reason;
       setToast({
         tone: "error",
-        message: tr(
-          "复制区域粘贴后会超出孔板边界。",
-          "The copied block would exceed the plate boundary.",
-        ),
+        message:
+          reason === "out-of-bounds"
+            ? tr(`有 ${plan?.outside ?? 0} 个孔会超出孔板，未粘贴。`, `${plan?.outside ?? 0} well(s) would fall off the plate; nothing pasted.`)
+            : reason === "clipboard-incompatible"
+              ? tr("复制的样本或基因已不在当前实验中，无法粘贴。", "The copied samples or assays are no longer in this experiment.")
+              : tr("复制的孔都是空的，没有可粘贴的内容。", "The copied wells are empty; nothing to paste."),
       });
       return false;
     }
-    const pastedCount = pasted.outcome.wellIds?.length ?? 0;
+    const pastedCount = plan?.targets.length ?? 0;
+    const overwritten = plan?.overwrittenWellIds.length ?? 0;
     setToast({
       tone: "neutral",
-      message: tr(
-        `已粘贴 ${pastedCount} 个孔；用量已按当前布局重算。`,
-        `Pasted ${pastedCount} well(s); requirements were recalculated.`,
-      ),
+      message: overwritten
+        ? tr(
+            `已粘贴 ${pastedCount} 个孔，覆盖 ${overwritten} 个；用量已重算，⌘/Ctrl + Z 撤销。`,
+            `Pasted ${pastedCount} well(s), replacing ${overwritten}; requirements recalculated. ⌘/Ctrl + Z to undo.`,
+          )
+        : tr(
+            `已粘贴 ${pastedCount} 个孔；用量已按当前布局重算。`,
+            `Pasted ${pastedCount} well(s); requirements were recalculated.`,
+          ),
     });
     return true;
   }
 
   useEffect(() => {
     const handleKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && pasteArmed) setPasteArmed(false);
       if (!(event.metaKey || event.ctrlKey)) {
         return;
       }
@@ -1613,12 +1627,14 @@ export function QpcrPlanner() {
         return;
       }
       const key = event.key.toLowerCase();
-      if (key === "c" && selectedWellIds.length > 0) {
+      // Text the user selected on the page keeps the browser's own copy.
+      const textSelected = !pointerOnPlateRef.current && Boolean(String(window.getSelection?.() ?? "").trim());
+      if (key === "c" && selectedWellIds.length > 0 && !textSelected) {
         event.preventDefault();
         copySelection();
         return;
       }
-      if (key === "v" && wellClipboard) {
+      if (key === "v" && wellClipboard && pasteArmed && !textSelected) {
         event.preventDefault();
         pasteSelection();
         return;
@@ -1654,58 +1670,38 @@ export function QpcrPlanner() {
     });
   }
 
-  function moveSelectionTo(
-    plateIndex: number,
-    plate: PlannerPlate,
-    destinationWellId: string,
-  ) {
-    if (!layout || selectedWellIds.length === 0) return;
-    let result = runPlateEdit({
-      type: "move",
-      plateNumber: plate.plateNumber,
-      destinationWellId,
-    });
-    if (result?.outcome.status === "conflict") {
-      const confirmedOverwrite = window.confirm(
-        tr(
-          `目标区域已有 ${result.outcome.wellIds?.length ?? 0} 个占用孔。是否覆盖？`,
-          `The destination contains ${result.outcome.wellIds?.length ?? 0} occupied well(s). Overwrite them?`,
-        ),
-      );
-      if (!confirmedOverwrite) {
-        runPlateEdit({ type: "set-move-mode", enabled: false });
-        return;
-      }
-      result = runPlateEdit({
-        type: "move",
-        plateNumber: plate.plateNumber,
-        destinationWellId,
-        allowOverwrite: true,
-      });
-    }
-    if (!result || result.outcome.status !== "applied") {
+  function dropSelection(fromWellId: string, toWellId: string) {
+    setMovePreview(null);
+    if (!layout || !activePlate || activePlateConfirmed || settingsStale) return;
+    const plan = planSwap(activePlate, selectedWellIds, fromWellId, toWellId);
+    if (plan.unchanged) return;
+    if (!plan.ok) {
       setToast({
         tone: "error",
-        message:
-          result?.outcome.reason === "out-of-bounds"
-            ? tr(
-                "所选孔平移后会超出孔板边界。",
-                "The translated selection would exceed the plate boundary.",
-              )
-            : tr(
-                "所选区域没有可移动的检测孔。",
-                "The selection has no occupied wells to move.",
-              ),
+        message: tr("有孔会移出孔板，未移动。", "Some wells would leave the plate; nothing moved."),
       });
-      runPlateEdit({ type: "set-move-mode", enabled: false });
       return;
     }
+    const swapped = plan.displacedWellIds.filter((wellId) => {
+      const well = activePlate.wells.find((item) => item.wellId === wellId);
+      return Boolean(well?.sample && well.gene);
+    }).length;
+    const result = runPlateEdit({
+      type: "move",
+      plateNumber: activePlate.plateNumber,
+      fromWellId,
+      destinationWellId: toWellId,
+    });
+    if (!result || result.outcome.status !== "applied") return;
+    const moved = plan.landingWellIds.length;
     setToast({
       tone: "neutral",
-      message: tr(
-        `已平移 ${result.outcome.wellIds?.length ?? 0} 个孔位。`,
-        `Moved ${result.outcome.wellIds?.length ?? 0} well(s).`,
-      ),
+      message: swapped
+        ? tr(
+            `已移动 ${moved} 个孔，与 ${swapped} 个孔交换位置；用量已重算。`,
+            `Moved ${moved} well(s) and swapped ${swapped}; requirements recalculated.`,
+          )
+        : tr(`已移动 ${moved} 个孔。`, `Moved ${moved} well(s).`),
     });
   }
 
@@ -1985,6 +1981,40 @@ export function QpcrPlanner() {
           selectedWellIds.includes(well.wellId) && well.sample && well.gene,
       ).length
     : 0;
+  const firstSelectedWellId = activePlate
+    ? activePlate.wells
+        .filter((well) => selectedWellIds.includes(well.wellId))
+        .sort((left, right) => left.row - right.row || left.column - right.column)[0]
+        ?.wellId ?? null
+    : null;
+  // Paste lands where the pointer is; without a pointer on the plate, at the first selected well.
+  const pasteAnchorWellId = hoveredWellId ?? firstSelectedWellId;
+  const wellHints = new Map<string, string[]>();
+  const addHints = (wellIds: readonly string[], className: string) => {
+    for (const wellId of wellIds) wellHints.set(wellId, [...(wellHints.get(wellId) ?? []), className]);
+  };
+  if (activePlate && movePreview) {
+    addHints(selectedWellIds, "well-move-source");
+    const plan = movePreview.to ? planSwap(activePlate, selectedWellIds, movePreview.from, movePreview.to) : null;
+    if (plan && !plan.unchanged) {
+      if (!plan.ok) addHints(plan.landingWellIds, "well-drop-invalid");
+      else {
+        addHints(plan.landingWellIds, "well-drop-landing");
+        addHints(plan.displacedWellIds, "well-drop-swap");
+      }
+    }
+  } else if (activePlate && pasteArmed && wellClipboard && pasteAnchorWellId && !activePlateConfirmed && !settingsStale) {
+    const plan = planPaste(activePlate, wellClipboard, pasteAnchorWellId);
+    if (plan) {
+      const targets = plan.targets.map((target) => target.wellId);
+      if (plan.outside) addHints(targets, "well-paste-invalid");
+      else {
+        const overwritten = new Set(plan.overwrittenWellIds);
+        addHints(targets.filter((wellId) => !overwritten.has(wellId)), "well-paste-target");
+        addHints(plan.overwrittenWellIds, "well-paste-overwrite");
+      }
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -3500,7 +3530,6 @@ export function QpcrPlanner() {
                             wellIds: [],
                             mode: "replace",
                           },
-                          { type: "set-move-mode", enabled: false },
                         ]);
                         setEditingPlateName(false);
                       }}
@@ -3671,8 +3700,15 @@ export function QpcrPlanner() {
                     columns={activePlate.columns}
                     language={language}
                     editable={!activePlateConfirmed && !settingsStale}
-                    moveMode={moveMode}
                     selectedWellIds={selectedWellIds}
+                    onMovePreview={(from, to) => setMovePreview({ from, to })}
+                    onMoveDrop={dropSelection}
+                    onMoveCancel={cancelMovePreview}
+                    onHoverWell={(wellId) => {
+                      hoveredWellRef.current = wellId;
+                      if (pasteArmed) setHoveredWellId(wellId);
+                    }}
+                    onBlankClick={() => setPasteArmed(false)}
                     describeWell={(wellId) => {
                       const well = activePlate.wells.find((well) => well.wellId === wellId);
                       return well ? describePlateWell(well, Boolean(well.sample && blankSampleSet.has(well.sample)), language) : "";
@@ -3773,8 +3809,8 @@ export function QpcrPlanner() {
                             `${selectedWellIds.length} selected (${selectedOccupiedCount} occupied)`,
                           )
                         : tr(
-                            "选择一个或多个孔后可编辑或平移",
-                            "Select one or more wells to edit or move",
+                            "选择孔后可编辑、拖动或复制",
+                            "Select wells to edit, drag or copy",
                           )}
                     </span>
                     <div className="selection-actions">
@@ -3802,8 +3838,8 @@ export function QpcrPlanner() {
                           settingsStale
                         }
                         title={tr(
-                          "粘贴到所选起始孔（⌘/Ctrl + V）",
-                          "Paste at selected anchor (⌘/Ctrl + V)",
+                          "从所选的第一个孔开始粘贴（⌘/Ctrl + V）",
+                          "Paste starting at the first selected well (⌘/Ctrl + V)",
                         )}
                       >
                         <ClipboardPaste size={13} />
@@ -3874,28 +3910,6 @@ export function QpcrPlanner() {
                         {tr("恢复所选", "Restore selected")}
                       </button>
                       <button
-                        className={`button button-quiet ${
-                          moveMode ? "active" : ""
-                        }`}
-                        type="button"
-                        disabled={
-                          selectedOccupiedCount === 0 ||
-                          activePlateConfirmed ||
-                          settingsStale
-                        }
-                        onClick={() =>
-                          runPlateEdit({
-                            type: "set-move-mode",
-                            enabled: !moveMode,
-                          })
-                        }
-                      >
-                        <Move size={13} />
-                        {moveMode
-                          ? tr("点选目标孔", "Choose destination")
-                          : tr("平移", "Move")}
-                      </button>
-                      <button
                         className="button button-clear"
                         type="button"
                         disabled={
@@ -3920,7 +3934,6 @@ export function QpcrPlanner() {
                                 wellIds: [],
                                 mode: "replace",
                               },
-                              { type: "set-move-mode", enabled: false },
                             ]);
                           }}
                           aria-label={tr("取消选择", "Clear selection")}
@@ -4005,6 +4018,7 @@ export function QpcrPlanner() {
                                 bridge ? "well-bridge" : "",
                                 manual ? "well-manual" : "",
                                 selected ? "well-selected" : "",
+                                ...(wellHints.get(well.wellId) ?? []),
                               ]
                                 .filter(Boolean)
                                 .join(" ");

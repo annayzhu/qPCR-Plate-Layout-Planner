@@ -11,7 +11,9 @@ import {
   pasteCopiedWells,
   rectangularWellIds,
   restoreSelectedWells,
-  translateSelectedWells,
+  planPaste,
+  planSwap,
+  swapSelectedWells,
 } from "../lib/manualLayout";
 import { planPlateLayout } from "../lib/platePlanner";
 import {
@@ -82,47 +84,76 @@ test("editing one selected well does not update its replicate neighbours", () =>
   );
 });
 
-test("selected wells move together and preserve their relative positions", () => {
+const at = (plate: ReturnType<typeof examplePlate>, wellId: string) =>
+  plate.wells.find((well) => well.wellId === wellId);
+const reaction = (plate: ReturnType<typeof examplePlate>, wellId: string) => {
+  const well = at(plate, wellId);
+  return well ? `${well.sample ?? "-"}/${well.gene ?? "-"}/${well.replicateIndex ?? "-"}` : "missing";
+};
+
+test("dragging a block onto empty wells moves it and leaves the old wells empty", () => {
   const plate = examplePlate();
-  const moved = translateSelectedWells(plate, ["A1", "A2", "A3"], "C1");
+  const before = ["A1", "A2", "A3"].map((wellId) => reaction(plate, wellId));
+  const moved = swapSelectedWells(plate, ["A1", "A2", "A3"], "A1", "C1");
   assert.equal(moved.ok, true);
   if (!moved.ok) return;
+  assert.deepEqual(moved.landingWellIds, ["C1", "C2", "C3"]);
+  assert.deepEqual(["C1", "C2", "C3"].map((wellId) => reaction(moved.plate, wellId)), before);
+  for (const wellId of ["A1", "A2", "A3"]) assert.equal(at(moved.plate, wellId)?.sample, null);
+  assert.equal(at(moved.plate, "C1")?.source, "manual");
+});
 
-  assert.deepEqual(moved.movedWellIds, ["C1", "C2", "C3"]);
-  for (const wellId of ["A1", "A2", "A3"]) {
-    assert.equal(
-      moved.plate.wells.find((well) => well.wellId === wellId)?.sample,
-      null,
-    );
-  }
+test("dragging onto occupied wells swaps the two blocks in the same shape", () => {
+  const plate = examplePlate();
+  const rowA = ["A1", "A2", "A3"].map((wellId) => reaction(plate, wellId));
+  const rowB = ["B1", "B2", "B3"].map((wellId) => reaction(plate, wellId));
+  const moved = swapSelectedWells(plate, ["A1", "A2", "A3"], "A2", "B2");
+  assert.equal(moved.ok, true);
+  if (!moved.ok) return;
+  assert.deepEqual(moved.displacedWellIds, ["B1", "B2", "B3"]);
+  assert.deepEqual(["B1", "B2", "B3"].map((wellId) => reaction(moved.plate, wellId)), rowA);
+  assert.deepEqual(["A1", "A2", "A3"].map((wellId) => reaction(moved.plate, wellId)), rowB);
+});
+
+test("an overlapping shift rotates the displaced well into the vacated one", () => {
+  const plate = examplePlate();
+  const original = ["A1", "A2", "A3", "A4"].map((wellId) => reaction(plate, wellId));
+  const moved = swapSelectedWells(plate, ["A1", "A2", "A3"], "A1", "A2");
+  assert.equal(moved.ok, true);
+  if (!moved.ok) return;
   assert.deepEqual(
-    ["C1", "C2", "C3"].map(
-      (wellId) =>
-        moved.plate.wells.find((well) => well.wellId === wellId)
-          ?.replicateIndex,
-    ),
-    [1, 2, 3],
+    ["A1", "A2", "A3", "A4"].map((wellId) => reaction(moved.plate, wellId)),
+    [original[3], original[0], original[1], original[2]],
   );
 });
 
-test("non-contiguous selections keep their gaps and collisions are reported", () => {
+test("non-contiguous selections keep their gaps; off-plate drops are refused", () => {
   const plate = examplePlate();
-  const moved = translateSelectedWells(plate, ["A1", "A3"], "C1");
+  const moved = swapSelectedWells(plate, ["A1", "A3"], "A1", "C1");
   assert.equal(moved.ok, true);
   if (moved.ok) {
-    assert.deepEqual(moved.movedWellIds, ["C1", "C3"]);
-    assert.equal(
-      moved.plate.wells.find((well) => well.wellId === "C2")?.sample,
-      null,
-    );
+    assert.deepEqual(moved.landingWellIds, ["C1", "C3"]);
+    assert.equal(at(moved.plate, "C2")?.sample, null);
   }
+  const refused = planSwap(plate, ["A1", "A2"], "A1", "A12");
+  assert.equal(refused.ok, false);
+  assert.equal(refused.reason, "out-of-bounds");
+  assert.deepEqual(refused.landingWellIds, ["A12"]);
+  assert.deepEqual(refused.moves, []);
+});
 
-  const collision = translateSelectedWells(plate, ["A1", "A2", "A3"], "B1");
-  assert.deepEqual(collision, {
-    ok: false,
-    reason: "collision",
-    collisionWellIds: ["B1", "B2", "B3"],
-  });
+test("every swap keeps the same set of reactions on the plate", () => {
+  const plate = examplePlate();
+  const census = (wells: typeof plate.wells) => wells.map((well) => `${well.sample}/${well.gene}/${well.replicateIndex}`).sort();
+  for (const [selection, from, to] of [
+    [["A1", "A2", "B1", "B2"], "A1", "B2"],
+    [["A3", "B1"], "B1", "D7"],
+    [["B3"], "B3", "A1"],
+  ] as const) {
+    const moved = swapSelectedWells(plate, selection, from, to);
+    assert.equal(moved.ok, true);
+    if (moved.ok) assert.deepEqual(census(moved.plate.wells), census(plate.wells));
+  }
 });
 
 test("copied wells paste as a duplicate block at the destination anchor", () => {
@@ -145,6 +176,28 @@ test("copied wells paste as a duplicate block at the destination anchor", () => 
     pasted.plate.wells.find((well) => well.wellId === "C3")?.gene,
     plate.wells.find((well) => well.wellId === "A3")?.gene,
   );
+});
+
+test("paste lines the first copied well up with the target, skips empty wells and reports overwrites", () => {
+  const plate = examplePlate();
+  // B2 then A3: A3 comes first in reading order, so it lands on the target.
+  const copied = copySelectedWells(plate, ["B2", "A3", "A4"]);
+  const plan = planPaste(plate, copied, "D5");
+  assert.ok(plan);
+  const filled = ["A3", "A4", "B2"].filter((wellId) => at(plate, wellId)?.sample && at(plate, wellId)?.gene);
+  const expected = { A3: "D5", A4: "D6", B2: "E4" } as const;
+  assert.deepEqual(plan.targets.map((target) => target.wellId), filled.map((wellId) => expected[wellId as keyof typeof expected]));
+  assert.equal(plan.outside, 0);
+
+  const overPlan = planPaste(plate, copySelectedWells(plate, ["A1"]), "B1");
+  assert.deepEqual(overPlan?.overwrittenWellIds, ["B1"]);
+
+  const edge = planPaste(plate, copySelectedWells(plate, ["A1", "A2", "A3"]), "A11");
+  assert.equal(edge?.outside, 1);
+  assert.deepEqual(pasteCopiedWells(plate, copySelectedWells(plate, ["A1", "A2", "A3"]), "A11"), { ok: false, reason: "out-of-bounds" });
+
+  const emptyOnly = copySelectedWells(plate, ["H12"]);
+  assert.deepEqual(pasteCopiedWells(plate, emptyOnly, "A1"), { ok: false, reason: "empty-clipboard" });
 });
 
 test("pasted occupied wells increase reaction and reagent requirements", () => {

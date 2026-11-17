@@ -105,7 +105,7 @@ test("copy and paste is one editing scenario with recalculation and undo", () =>
   );
 });
 
-test("paste reports occupied destinations before an explicit overwrite", () => {
+test("paste overwrites occupied destinations in one undoable step", () => {
   let session = sessionFixture();
   const sourceWellId = occupiedWellId(session, "G1");
   const occupiedDestination = occupiedWellId(session, "R1");
@@ -117,22 +117,53 @@ test("paste reports occupied destinations before an explicit overwrite", () => {
   }).session;
   session = dispatchPlateEdit(session, { type: "copy" }).session;
 
-  const conflict = dispatchPlateEdit(session, {
-    type: "paste",
-    plateNumber: 1,
-    destinationWellId: occupiedDestination,
-  });
-  assert.equal(conflict.outcome.status, "conflict");
-  assert.deepEqual(conflict.outcome.wellIds, [occupiedDestination]);
-  assert.deepEqual(conflict.session.plan, session.plan);
-
   const overwritten = dispatchPlateEdit(session, {
     type: "paste",
     plateNumber: 1,
     destinationWellId: occupiedDestination,
-    allowOverwrite: true,
   });
   assert.equal(overwritten.outcome.status, "applied");
+  assert.equal(
+    overwritten.session.plan.plates[0].wells.find((well) => well.wellId === occupiedDestination)?.gene,
+    "G1",
+  );
+  const undone = dispatchPlateEdit(overwritten.session, { type: "undo" });
+  assert.equal(
+    undone.session.plan.plates[0].wells.find((well) => well.wellId === occupiedDestination)?.gene,
+    "R1",
+  );
+});
+
+test("dragging the selection swaps it with the wells it lands on", () => {
+  let session = sessionFixture();
+  const first = occupiedWellId(session, "G1");
+  const second = occupiedWellId(session, "R1");
+  session = dispatchPlateEdit(session, {
+    type: "select",
+    plateNumber: 1,
+    wellIds: [first],
+    mode: "replace",
+  }).session;
+  const moved = dispatchPlateEdit(session, {
+    type: "move",
+    plateNumber: 1,
+    fromWellId: first,
+    destinationWellId: second,
+  });
+  assert.equal(moved.outcome.status, "applied");
+  const wells = moved.session.plan.plates[0].wells;
+  assert.equal(wells.find((well) => well.wellId === second)?.gene, "G1");
+  assert.equal(wells.find((well) => well.wellId === first)?.gene, "R1");
+  assert.deepEqual(moved.session.selection.wellIds, [second]);
+  assert.equal(moved.session.undoStack.length, 1);
+
+  const offPlate = dispatchPlateEdit(moved.session, {
+    type: "move",
+    plateNumber: 1,
+    fromWellId: second,
+    destinationWellId: "Z99",
+  });
+  assert.equal(offPlate.outcome.status, "rejected");
 });
 
 test("assign, clear, restore, and move stay behind one interface", () => {
@@ -183,6 +214,7 @@ test("assign, clear, restore, and move stay behind one interface", () => {
   const moved = dispatchPlateEdit(session, {
     type: "move",
     plateNumber: 1,
+    fromWellId: referenceWellId,
     destinationWellId: "H12",
   });
   assert.equal(moved.outcome.status, "applied");
@@ -236,7 +268,6 @@ test("sparse clipboard preserves gaps and selected empty wells clear destination
     type: "paste",
     plateNumber: 1,
     destinationWellId: "B1",
-    allowOverwrite: true,
   });
   assert.equal(pasted.outcome.status, "applied");
   const plate = pasted.session.plan.plates[0];
@@ -255,16 +286,14 @@ test("sparse clipboard preserves gaps and selected empty wells clear destination
     mode: "replace",
   }).session;
   session = dispatchPlateEdit(session, { type: "copy" }).session;
-  session = dispatchPlateEdit(session, {
+  // A copy of empty wells keeps its shape but never erases what is already there.
+  const emptyPaste = dispatchPlateEdit(session, {
     type: "paste",
     plateNumber: 1,
     destinationWellId: "B2",
-    allowOverwrite: true,
-  }).session;
-  assert.equal(
-    session.plan.plates[0].wells.find((well) => well.wellId === "B2")?.gene,
-    null,
-  );
+  });
+  assert.equal(emptyPaste.outcome.status, "rejected");
+  assert.equal(emptyPaste.outcome.reason, "empty-clipboard");
 });
 
 test("clipboard is rejected after its sample is removed from the experiment", () => {
@@ -355,15 +384,10 @@ test("plate rename and restore remain atomic session commands", () => {
   }).session;
   session = dispatchPlateEdit(session, { type: "clear" }).session;
   session = dispatchPlateEdit(session, {
-    type: "set-move-mode",
-    enabled: true,
-  }).session;
-  session = dispatchPlateEdit(session, {
     type: "restore-plate",
     plateNumber: 1,
   }).session;
   assert.equal(session.plan.plates[0].name, "Validation plate");
   assert.deepEqual(session.plan.plates[0].wells, session.generatedBaseline.plates[0].wells);
   assert.deepEqual(session.selection.wellIds, []);
-  assert.equal(session.moveMode, false);
 });

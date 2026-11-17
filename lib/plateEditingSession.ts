@@ -18,7 +18,7 @@ import {
   pasteCopiedWells,
   rectangularWellIds,
   restoreSelectedWells,
-  translateSelectedWells,
+  swapSelectedWells,
   type ManualLayoutPatch,
   type WellClipboard,
 } from "./manualLayout";
@@ -34,7 +34,6 @@ export interface PlateSelection {
 interface HistorySnapshot {
   patch: ManualLayoutPatch;
   selection: PlateSelection;
-  moveMode: boolean;
 }
 
 export interface PlateEditingSession {
@@ -43,7 +42,6 @@ export interface PlateEditingSession {
   planInput: PlanInput;
   selection: PlateSelection;
   clipboard: WellClipboard | null;
-  moveMode: boolean;
   confirmedPlateNumbers: Set<number>;
   undoStack: HistorySnapshot[];
   redoStack: HistorySnapshot[];
@@ -80,7 +78,6 @@ export type PlateEditCommand =
       type: "paste";
       plateNumber: number;
       destinationWellId: string;
-      allowOverwrite?: boolean;
     }
   | {
       type: "assign";
@@ -91,12 +88,12 @@ export type PlateEditCommand =
   | { type: "clear" }
   | { type: "restore-selected" }
   | {
+      /** Drag the selection from one of its wells onto another well; displaced wells swap back. */
       type: "move";
       plateNumber: number;
+      fromWellId: string;
       destinationWellId: string;
-      allowOverwrite?: boolean;
     }
-  | { type: "set-move-mode"; enabled: boolean }
   | { type: "rename-plate"; plateNumber: number; name: string }
   | { type: "restore-plate"; plateNumber: number }
   | { type: "set-confirmed"; plateNumber: number; confirmed: boolean }
@@ -144,7 +141,6 @@ function historySnapshot(
   return {
     patch,
     selection: cloneSelection(session.selection),
-    moveMode: session.moveMode,
   };
 }
 
@@ -227,7 +223,6 @@ export function createPlateEditingSession({
     planInput,
     selection: { plateNumber: null, wellIds: [], anchorWellId: null },
     clipboard: null,
-    moveMode: false,
     confirmedPlateNumbers: new Set(confirmedPlateNumbers),
     undoStack: [],
     redoStack: [],
@@ -334,16 +329,6 @@ export function dispatchPlateEdit(
       command.destinationWellId,
     );
     if (!pasted.ok) return rejected(session, pasted.reason);
-    if (pasted.overwrittenWellIds.length > 0 && !command.allowOverwrite) {
-      return {
-        session,
-        outcome: {
-          status: "conflict",
-          reason: "collision",
-          wellIds: pasted.overwrittenWellIds,
-        },
-      };
-    }
     return appliedMutation(
       session,
       replacePlate(session.plan, pasted.plate),
@@ -421,46 +406,26 @@ export function dispatchPlateEdit(
     }
     const plate = plateByNumber(session.plan, command.plateNumber);
     if (!plate) return rejected(session, "plate-not-found");
-    const moved = translateSelectedWells(
+    const moved = swapSelectedWells(
       plate,
       session.selection.wellIds,
+      command.fromWellId,
       command.destinationWellId,
-      command.allowOverwrite,
     );
     if (!moved.ok) {
-      if (moved.reason === "collision") {
-        return {
-          session,
-          outcome: {
-            status: "conflict",
-            reason: "collision",
-            wellIds: moved.collisionWellIds,
-          },
-        };
-      }
-      return rejected(session, moved.reason);
+      return rejected(session, moved.reason === "out-of-bounds" ? "out-of-bounds" : "no-selection");
     }
-    const applied = appliedMutation(
+    if (moved.unchanged) return { session, outcome: { status: "noop" } };
+    return appliedMutation(
       session,
       replacePlate(session.plan, moved.plate),
       {
         plateNumber: command.plateNumber,
-        wellIds: moved.movedWellIds,
-        anchorWellId: command.destinationWellId,
+        wellIds: moved.landingWellIds,
+        anchorWellId: moved.landingWellIds[0] ?? null,
       },
       [command.plateNumber],
     );
-    return {
-      ...applied,
-      session: { ...applied.session, moveMode: false },
-    };
-  }
-
-  if (command.type === "set-move-mode") {
-    return {
-      session: { ...session, moveMode: command.enabled },
-      outcome: { status: "selected" },
-    };
   }
 
   if (command.type === "rename-plate") {
@@ -489,10 +454,7 @@ export function dispatchPlateEdit(
       { plateNumber: command.plateNumber, wellIds: [], anchorWellId: null },
       [command.plateNumber],
     );
-    return {
-      ...restored,
-      session: { ...restored.session, moveMode: false },
-    };
+    return restored;
   }
 
   if (command.type === "set-confirmed") {
@@ -529,7 +491,6 @@ export function dispatchPlateEdit(
       ...session,
       plan,
       selection: cloneSelection(target.selection),
-      moveMode: target.moveMode,
       confirmedPlateNumbers: new Set(
         [...session.confirmedPlateNumbers].filter(
           (plateNumber) => !changedPlateNumbers.includes(plateNumber),
